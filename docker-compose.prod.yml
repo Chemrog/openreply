@@ -37,6 +37,11 @@ services:
       FACEBOOK_APP_SECRET: ${FACEBOOK_APP_SECRET}
       WEBHOOK_VERIFY_TOKEN: ${WEBHOOK_VERIFY_TOKEN}
       # ALLOWED_EMAILS: ${ALLOWED_EMAILS}   # uncomment to restrict sign-ins
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     depends_on:
       redis:
         condition: service_healthy
@@ -54,6 +59,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      web:
+        condition: service_healthy
 
   cron:
     build: .
@@ -63,7 +70,8 @@ services:
       CRON_BASE_URL: http://web:3000
       CRON_SECRET: ${CRON_SECRET}
     depends_on:
-      - web
+      web:
+        condition: service_healthy
 
 volumes:
   redisdata:
