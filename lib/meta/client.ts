@@ -719,7 +719,7 @@ export async function getLongLivedToken(
   url.searchParams.set("client_secret", requireEnv("INSTAGRAM_APP_SECRET"));
   url.searchParams.set("access_token", shortLivedToken);
 
-  const response = await fetch(url.toString());
+  const response = await fetch(url.toString(), { method: "POST" });
   const data = await handleResponse<TokenResponse>(response);
 
   return {
@@ -735,7 +735,7 @@ export async function refreshLongLivedToken(
   url.searchParams.set("grant_type", "ig_refresh_token");
   url.searchParams.set("access_token", longLivedToken);
 
-  const response = await fetch(url.toString());
+  const response = await fetch(url.toString(), { method: "POST" });
   const data = await handleResponse<TokenResponse>(response);
 
   return {
