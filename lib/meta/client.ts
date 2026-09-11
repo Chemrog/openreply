@@ -714,12 +714,17 @@ export async function getFollowerCountSeries(
 export async function getLongLivedToken(
   shortLivedToken: string
 ): Promise<{ accessToken: string; expiresIn: number }> {
-  const url = new URL("https://graph.instagram.com/access_token");
-  url.searchParams.set("grant_type", "ig_exchange_token");
-  url.searchParams.set("client_secret", requireEnv("INSTAGRAM_APP_SECRET"));
-  url.searchParams.set("access_token", shortLivedToken);
+  const body = new URLSearchParams({
+    grant_type: "ig_exchange_token",
+    client_secret: requireEnv("INSTAGRAM_APP_SECRET"),
+    access_token: shortLivedToken,
+  });
 
-  const response = await fetch(url.toString());
+  const response = await fetch("https://graph.instagram.com/access_token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
   const data = await handleResponse<TokenResponse>(response);
 
   return {
@@ -731,11 +736,16 @@ export async function getLongLivedToken(
 export async function refreshLongLivedToken(
   longLivedToken: string
 ): Promise<{ accessToken: string; expiresIn: number }> {
-  const url = new URL("https://graph.instagram.com/refresh_access_token");
-  url.searchParams.set("grant_type", "ig_refresh_token");
-  url.searchParams.set("access_token", longLivedToken);
+  const body = new URLSearchParams({
+    grant_type: "ig_refresh_token",
+    access_token: longLivedToken,
+  });
 
-  const response = await fetch(url.toString());
+  const response = await fetch("https://graph.instagram.com/refresh_access_token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
   const data = await handleResponse<TokenResponse>(response);
 
   return {
