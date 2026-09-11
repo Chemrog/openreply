@@ -1,5 +1,49 @@
+import { cookies } from "next/headers";
 import { prisma } from "@/lib/db/client";
 import type { Workspace, WorkspaceRole } from "@/app/generated/prisma/client";
+
+const ACTIVE_WORKSPACE_COOKIE = "active-workspace-id";
+
+export async function getActiveWorkspaceId(): Promise<string | null> {
+  const jar = await cookies();
+  return jar.get(ACTIVE_WORKSPACE_COOKIE)?.value ?? null;
+}
+
+export async function setActiveWorkspaceId(workspaceId: string): Promise<void> {
+  const jar = await cookies();
+  jar.set(ACTIVE_WORKSPACE_COOKIE, workspaceId, {
+    httpOnly: true,
+    sameSite: "lax",
+    path: "/",
+    maxAge: 60 * 60 * 24 * 365,
+  });
+}
+
+export async function getUserWorkspaces(
+  userId: string
+): Promise<Array<{ id: string; name: string; role: WorkspaceRole }>> {
+  const memberships = await prisma.workspaceMember.findMany({
+    where: { userId },
+    include: { workspace: { select: { id: true, name: true } } },
+    orderBy: { createdAt: "asc" },
+  });
+  return memberships.map((m) => ({
+    id: m.workspace.id,
+    name: m.workspace.name,
+    role: m.role,
+  }));
+}
+
+export async function getWorkspaceForUser(
+  userId: string,
+  workspaceId: string
+): Promise<Workspace | null> {
+  const membership = await prisma.workspaceMember.findUnique({
+    where: { workspaceId_userId: { workspaceId, userId } },
+    include: { workspace: true },
+  });
+  return membership?.workspace ?? null;
+}
 
 function normalizeInviteEmail(email: string) {
   return email.trim().toLowerCase();

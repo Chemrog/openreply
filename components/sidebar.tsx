@@ -8,6 +8,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import WorkspaceSwitcher from "@/components/workspace-switcher";
 
 const navItems = [
   { label: "Dashboard", href: "/dashboard" },
@@ -19,16 +20,24 @@ const navItems = [
   { label: "Diagnostics", href: "/diagnostics" },
 ];
 
+interface WorkspaceItem {
+  id: string;
+  name: string;
+  role: string;
+}
+
 interface SidebarProps {
   isOpen: boolean;
   onClose: () => void;
-  workspaceName: string;
+  workspaces: WorkspaceItem[];
+  activeWorkspaceId: string;
 }
 
 export default function Sidebar({
   isOpen,
   onClose,
-  workspaceName,
+  workspaces,
+  activeWorkspaceId,
 }: SidebarProps) {
   const pathname = usePathname();
 
@@ -86,10 +95,10 @@ export default function Sidebar({
           })}
         </nav>
 
-        <div className="px-5 py-4 border-t border-border">
-          <p className="text-sm text-foreground truncate">{workspaceName}</p>
-          <p className="text-xs text-muted">Self-hosted</p>
-        </div>
+        <WorkspaceSwitcher
+          workspaces={workspaces}
+          activeWorkspaceId={activeWorkspaceId}
+        />
       </aside>
     </>
   );
