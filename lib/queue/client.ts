@@ -66,15 +66,26 @@ export interface ProcessMessageJob {
   senderId: string;
 }
 
+// A tapped Quick Reply chip from a Quick Replies classification prompt.
+export interface ProcessQuickReplyJob {
+  instagramAccountId: string;
+  workspaceId: string;
+  senderId: string;
+  payload: string;
+  messageId: string;
+}
+
 export type DmQueueJob =
   | ProcessCommentJob
   | ProcessPostbackJob
   | ProcessFollowUpJob
-  | ProcessMessageJob;
+  | ProcessMessageJob
+  | ProcessQuickReplyJob;
 
 export const POSTBACK_JOB_NAME = "process-postback";
 export const FOLLOWUP_JOB_NAME = "process-followup";
 export const MESSAGE_JOB_NAME = "process-message";
+export const QUICK_REPLY_JOB_NAME = "process-quick-reply";
 
 let dmQueue: Queue<DmQueueJob> | null = null;
 

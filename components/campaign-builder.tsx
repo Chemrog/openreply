@@ -54,6 +54,39 @@ interface LoadedCampaign {
   isActive: boolean;
   instagramAccountId: string;
   trackedLinks?: { destinationUrl: string; label?: string | null }[];
+  quickRepliesEnabled?: boolean;
+  quickRepliesMessage?: string | null;
+  quickRepliesRetryEnabled?: boolean;
+  quickRepliesRetryMessage?: string | null;
+  quickRepliesRetryCount?: number;
+  skipIfTagged?: boolean;
+  quickReplyOptions?: {
+    label: string;
+    payload: string;
+    tagName: string;
+    responseMessage: string;
+    responseLinkUrl: string | null;
+    responseLinkLabel: string | null;
+    order: number;
+  }[];
+}
+
+interface QuickReplyOptionState {
+  label: string;
+  tagName: string;
+  responseMessage: string;
+  responseLinkUrl: string;
+  responseLinkLabel: string;
+}
+
+function slugifyPayload(s: string): string {
+  return (
+    s
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "") || "opcion"
+  );
 }
 
 interface CampaignBuilderProps {
@@ -181,6 +214,16 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
   const [followUpMessage, setFollowUpMessage] = useState("");
   const [followUpDelayMinutes, setFollowUpDelayMinutes] = useState(0);
 
+  const [quickRepliesEnabled, setQuickRepliesEnabled] = useState(false);
+  const [quickRepliesMessage, setQuickRepliesMessage] = useState("");
+  const [quickRepliesRetryEnabled, setQuickRepliesRetryEnabled] = useState(false);
+  const [quickRepliesRetryMessage, setQuickRepliesRetryMessage] = useState("");
+  const [quickRepliesRetryCount, setQuickRepliesRetryCount] = useState(3);
+  const [skipIfTagged, setSkipIfTagged] = useState(false);
+  const [quickReplyOptions, setQuickReplyOptions] = useState<QuickReplyOptionState[]>(
+    []
+  );
+
   const [previewTab, setPreviewTab] = useState<PreviewTab>("dm");
 
   // CSV import queue. When present, each save advances to the next row instead
@@ -288,6 +331,24 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
         setFollowUpEnabled(c.followUpEnabled ?? false);
         setFollowUpMessage(c.followUpMessage ?? "");
         setFollowUpDelayMinutes(c.followUpDelayMinutes ?? 0);
+        setQuickRepliesEnabled(c.quickRepliesEnabled ?? false);
+        setQuickRepliesMessage(c.quickRepliesMessage ?? "");
+        setQuickRepliesRetryEnabled(c.quickRepliesRetryEnabled ?? false);
+        setQuickRepliesRetryMessage(c.quickRepliesRetryMessage ?? "");
+        setQuickRepliesRetryCount(c.quickRepliesRetryCount ?? 3);
+        setSkipIfTagged(c.skipIfTagged ?? false);
+        setQuickReplyOptions(
+          (c.quickReplyOptions ?? [])
+            .slice()
+            .sort((a, b) => a.order - b.order)
+            .map((o) => ({
+              label: o.label,
+              tagName: o.tagName,
+              responseMessage: o.responseMessage,
+              responseLinkUrl: o.responseLinkUrl ?? "",
+              responseLinkLabel: o.responseLinkLabel ?? "",
+            }))
+        );
       })
       .catch(() => setNotFound(true))
       .finally(() => setLoading(false));
@@ -394,6 +455,11 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
     if (!dmMessage.trim()) return setError("Add the DM with the link.");
     if (openingDmEnabled && (!openingDmMessage.trim() || !openingDmButtonLabel.trim()))
       return setError("Your opening DM needs a message and a button label.");
+    const validQuickReplyOptions = quickReplyOptions.filter(
+      (o) => o.label.trim() && o.tagName.trim() && o.responseMessage.trim()
+    );
+    if (quickRepliesEnabled && validQuickReplyOptions.length === 0)
+      return setError("Add at least one quick reply option.");
 
     setSaving(true);
 
@@ -427,6 +493,26 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
       followUpEnabled,
       followUpMessage: followUpEnabled ? followUpMessage.trim() : "",
       followUpDelayMinutes: followUpEnabled ? followUpDelayMinutes : 0,
+      quickRepliesEnabled,
+      quickRepliesMessage: quickRepliesEnabled ? quickRepliesMessage.trim() : "",
+      quickRepliesRetryEnabled: quickRepliesEnabled ? quickRepliesRetryEnabled : false,
+      quickRepliesRetryMessage:
+        quickRepliesEnabled && quickRepliesRetryEnabled
+          ? quickRepliesRetryMessage.trim()
+          : "",
+      quickRepliesRetryCount,
+      skipIfTagged: quickRepliesEnabled ? skipIfTagged : false,
+      quickReplyOptions: quickRepliesEnabled
+        ? validQuickReplyOptions.map((o, i) => ({
+            label: o.label.trim().slice(0, 20),
+            payload: `qr_${slugifyPayload(o.tagName)}_${i}`,
+            tagName: o.tagName.trim(),
+            responseMessage: o.responseMessage.trim(),
+            responseLinkUrl: o.responseLinkUrl.trim() || "",
+            responseLinkLabel: o.responseLinkLabel.trim() || "",
+            order: i,
+          }))
+        : [],
       isActive: activeValue,
     };
 
@@ -975,6 +1061,234 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
                   {" {username}"} personalizes it. Max 24 hours, to stay inside
                   Instagram&apos;s messaging window.
                 </p>
+              </div>
+            )}
+          </div>
+        </Section>
+
+        <Section title="Clasificar con Quick Replies">
+          <div className="rounded-lg border border-border p-3">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-foreground">
+                Usar Quick Replies para clasificar
+              </span>
+              <Toggle
+                on={quickRepliesEnabled}
+                onToggle={() => setQuickRepliesEnabled(!quickRepliesEnabled)}
+              />
+            </div>
+            {quickRepliesEnabled && (
+              <div className="mt-3 space-y-4">
+                <textarea
+                  value={quickRepliesMessage}
+                  onChange={(e) => setQuickRepliesMessage(e.target.value)}
+                  placeholder="¿Cuál de estas opciones te describe mejor?"
+                  rows={2}
+                  className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none resize-none"
+                  maxLength={1000}
+                />
+
+                <div className="space-y-3">
+                  {quickReplyOptions.map((option, i) => (
+                    <div
+                      key={i}
+                      className="space-y-2 rounded-lg border border-border p-3"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-medium text-muted">
+                          Opción {i + 1}
+                        </span>
+                        <div className="ml-auto flex items-center gap-1">
+                          <button
+                            type="button"
+                            disabled={i === 0}
+                            onClick={() =>
+                              setQuickReplyOptions((prev) => {
+                                const next = [...prev];
+                                [next[i - 1], next[i]] = [next[i], next[i - 1]];
+                                return next;
+                              })
+                            }
+                            className="px-1.5 text-muted hover:text-foreground disabled:opacity-30"
+                            aria-label="Mover arriba"
+                          >
+                            ↑
+                          </button>
+                          <button
+                            type="button"
+                            disabled={i === quickReplyOptions.length - 1}
+                            onClick={() =>
+                              setQuickReplyOptions((prev) => {
+                                const next = [...prev];
+                                [next[i + 1], next[i]] = [next[i], next[i + 1]];
+                                return next;
+                              })
+                            }
+                            className="px-1.5 text-muted hover:text-foreground disabled:opacity-30"
+                            aria-label="Mover abajo"
+                          >
+                            ↓
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setQuickReplyOptions((prev) =>
+                                prev.filter((_, idx) => idx !== i)
+                              )
+                            }
+                            className="px-1.5 text-muted hover:text-error"
+                            aria-label="Eliminar opción"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      </div>
+                      <input
+                        value={option.label}
+                        onChange={(e) =>
+                          setQuickReplyOptions((prev) =>
+                            prev.map((o, idx) =>
+                              idx === i ? { ...o, label: e.target.value } : o
+                            )
+                          )
+                        }
+                        placeholder="Texto del chip (ej. Artista)"
+                        maxLength={20}
+                        className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
+                      />
+                      <input
+                        value={option.tagName}
+                        onChange={(e) =>
+                          setQuickReplyOptions((prev) =>
+                            prev.map((o, idx) =>
+                              idx === i ? { ...o, tagName: e.target.value } : o
+                            )
+                          )
+                        }
+                        placeholder="Etiqueta (ej. Artista)"
+                        maxLength={50}
+                        className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
+                      />
+                      <textarea
+                        value={option.responseMessage}
+                        onChange={(e) =>
+                          setQuickReplyOptions((prev) =>
+                            prev.map((o, idx) =>
+                              idx === i
+                                ? { ...o, responseMessage: e.target.value }
+                                : o
+                            )
+                          )
+                        }
+                        placeholder="Mensaje de respuesta para esta opción"
+                        rows={2}
+                        maxLength={1000}
+                        className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none resize-none"
+                      />
+                      <div className="flex gap-2">
+                        <input
+                          value={option.responseLinkUrl}
+                          onChange={(e) =>
+                            setQuickReplyOptions((prev) =>
+                              prev.map((o, idx) =>
+                                idx === i
+                                  ? { ...o, responseLinkUrl: e.target.value }
+                                  : o
+                              )
+                            )
+                          }
+                          placeholder="https://... (link opcional)"
+                          className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
+                        />
+                        <input
+                          value={option.responseLinkLabel}
+                          onChange={(e) =>
+                            setQuickReplyOptions((prev) =>
+                              prev.map((o, idx) =>
+                                idx === i
+                                  ? { ...o, responseLinkLabel: e.target.value }
+                                  : o
+                              )
+                            )
+                          }
+                          placeholder="Texto del botón"
+                          maxLength={20}
+                          className="w-32 shrink-0 rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+                  ))}
+                  {quickReplyOptions.length < 13 && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setQuickReplyOptions((prev) => [
+                          ...prev,
+                          {
+                            label: "",
+                            tagName: "",
+                            responseMessage: "",
+                            responseLinkUrl: "",
+                            responseLinkLabel: "",
+                          },
+                        ])
+                      }
+                      className="text-xs font-medium text-accent hover:underline"
+                    >
+                      + Agregar opción
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2.5">
+                  <span className="text-sm text-foreground">
+                    Reintentar si no elige opción
+                  </span>
+                  <Toggle
+                    on={quickRepliesRetryEnabled}
+                    onToggle={() =>
+                      setQuickRepliesRetryEnabled(!quickRepliesRetryEnabled)
+                    }
+                  />
+                </div>
+                {quickRepliesRetryEnabled && (
+                  <div className="space-y-2">
+                    <textarea
+                      value={quickRepliesRetryMessage}
+                      onChange={(e) => setQuickRepliesRetryMessage(e.target.value)}
+                      placeholder="Por favor elige una de las opciones de arriba 👆"
+                      rows={2}
+                      maxLength={1000}
+                      className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none resize-none"
+                    />
+                    <div className="flex flex-wrap items-center gap-2 text-sm text-foreground">
+                      <span className="text-xs text-muted">Reintentar hasta</span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={10}
+                        value={quickRepliesRetryCount}
+                        onChange={(e) =>
+                          setQuickRepliesRetryCount(
+                            Math.max(0, Math.min(10, Math.floor(Number(e.target.value) || 0)))
+                          )
+                        }
+                        className="w-20 rounded-lg border border-border bg-surface px-2 py-1 text-sm text-foreground focus:border-accent/40 focus:outline-none"
+                      />
+                      <span className="text-xs text-muted">veces</span>
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2.5">
+                  <span className="text-sm text-foreground">
+                    Saltar si ya tiene etiqueta
+                  </span>
+                  <Toggle
+                    on={skipIfTagged}
+                    onToggle={() => setSkipIfTagged(!skipIfTagged)}
+                  />
+                </div>
               </div>
             )}
           </div>

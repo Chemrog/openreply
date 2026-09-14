@@ -403,6 +403,54 @@ export async function sendDirectMessageWithLinkButton(
   return handleResponse(response);
 }
 
+/**
+ * A single Quick Reply chip. Meta caps the title at 20 characters and allows
+ * at most 13 quick_replies per message.
+ */
+export interface QuickReply {
+  title: string;
+  payload: string;
+}
+
+/**
+ * Send a direct message with Quick Reply chips — used to let a user
+ * self-classify (e.g. Artist / Manager / Label) after the reveal DM. Distinct
+ * from a button template: chips render under the message and, when tapped,
+ * arrive back as `message.quick_reply.payload` on a normal messaging webhook
+ * event rather than a `messaging_postbacks` event.
+ */
+export async function sendDirectMessageWithQuickReplies(
+  accessToken: string,
+  instagramAccountId: string,
+  userId: string,
+  text: string,
+  quickReplies: QuickReply[]
+): Promise<{ recipient_id: string; message_id: string }> {
+  const response = await fetch(
+    `${instagramGraphBase()}/${instagramAccountId}/messages`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({
+        recipient: { id: userId },
+        message: {
+          text: text.slice(0, 1000),
+          quick_replies: quickReplies.slice(0, 13).map((qr) => ({
+            content_type: "text",
+            title: qr.title.slice(0, 20),
+            payload: qr.payload,
+          })),
+        },
+      }),
+    }
+  );
+
+  return handleResponse(response);
+}
+
 export async function sendCommentReply(
   accessToken: string,
   commentId: string,

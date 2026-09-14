@@ -60,6 +60,27 @@ const createAutomationSchema = z
     secondaryButtonLabel: z.string().max(20).optional().nullable(),
     isActive: z.boolean().optional().default(true),
     wholeWordMatch: z.boolean().optional().default(true),
+    quickRepliesEnabled: z.boolean().optional().default(false),
+    quickRepliesMessage: z.string().max(1000).optional().nullable(),
+    quickRepliesRetryEnabled: z.boolean().optional().default(false),
+    quickRepliesRetryMessage: z.string().max(1000).optional().nullable(),
+    quickRepliesRetryCount: z.number().int().min(0).max(10).optional().default(3),
+    skipIfTagged: z.boolean().optional().default(false),
+    quickReplyOptions: z
+      .array(
+        z.object({
+          label: z.string().min(1).max(20),
+          payload: z.string().min(1).max(100),
+          tagName: z.string().min(1).max(50),
+          responseMessage: z.string().min(1).max(1000),
+          responseLinkUrl: z.union([z.string().url(), z.literal("")]).optional().nullable(),
+          responseLinkLabel: z.string().max(20).optional().nullable(),
+          order: z.number().int().optional().default(0),
+        })
+      )
+      .max(13)
+      .optional()
+      .default([]),
   })
   // A campaign must target a specific post, any post, or the next reel.
   .refine(
@@ -107,6 +128,26 @@ const updateAutomationSchema = z.object({
   isActive: z.boolean().optional(),
   wholeWordMatch: z.boolean().optional(),
   reportShareEnabled: z.boolean().optional(),
+  quickRepliesEnabled: z.boolean().optional(),
+  quickRepliesMessage: z.string().max(1000).optional().nullable(),
+  quickRepliesRetryEnabled: z.boolean().optional(),
+  quickRepliesRetryMessage: z.string().max(1000).optional().nullable(),
+  quickRepliesRetryCount: z.number().int().min(0).max(10).optional(),
+  skipIfTagged: z.boolean().optional(),
+  quickReplyOptions: z
+    .array(
+      z.object({
+        label: z.string().min(1).max(20),
+        payload: z.string().min(1).max(100),
+        tagName: z.string().min(1).max(50),
+        responseMessage: z.string().min(1).max(1000),
+        responseLinkUrl: z.union([z.string().url(), z.literal("")]).optional().nullable(),
+        responseLinkLabel: z.string().max(20).optional().nullable(),
+        order: z.number().int().optional().default(0),
+      })
+    )
+    .max(13)
+    .optional(),
   // Empty string clears the tracked link; a URL updates/creates it; undefined
   // leaves it unchanged.
   trackedDestinationUrl: z
@@ -155,6 +196,7 @@ export async function GET(request: NextRequest) {
         },
         orderBy: { createdAt: "asc" },
       },
+      quickReplyOptions: { orderBy: { order: "asc" } },
     },
     orderBy: { createdAt: "desc" },
   });
@@ -427,15 +469,46 @@ export async function POST(request: NextRequest) {
         : null,
       isActive: parsed.data.isActive,
       wholeWordMatch: parsed.data.wholeWordMatch,
+      quickRepliesEnabled: parsed.data.quickRepliesEnabled,
+      quickRepliesMessage: parsed.data.quickRepliesEnabled
+        ? parsed.data.quickRepliesMessage || null
+        : null,
+      quickRepliesRetryEnabled: parsed.data.quickRepliesEnabled
+        ? parsed.data.quickRepliesRetryEnabled
+        : false,
+      quickRepliesRetryMessage:
+        parsed.data.quickRepliesEnabled && parsed.data.quickRepliesRetryEnabled
+          ? parsed.data.quickRepliesRetryMessage || null
+          : null,
+      quickRepliesRetryCount: parsed.data.quickRepliesRetryCount,
+      skipIfTagged: parsed.data.quickRepliesEnabled
+        ? parsed.data.skipIfTagged
+        : false,
       workspaceId,
       instagramAccountId: instagramAccount.id,
       reportShareSlug: generateReportShareSlug(),
       ...(linkCreates.length > 0
         ? { trackedLinks: { create: linkCreates } }
         : {}),
+      ...(parsed.data.quickRepliesEnabled && parsed.data.quickReplyOptions.length > 0
+        ? {
+            quickReplyOptions: {
+              create: parsed.data.quickReplyOptions.map((option, index) => ({
+                label: option.label,
+                payload: option.payload,
+                tagName: option.tagName,
+                responseMessage: option.responseMessage,
+                responseLinkUrl: option.responseLinkUrl || null,
+                responseLinkLabel: option.responseLinkLabel || null,
+                order: option.order ?? index,
+              })),
+            },
+          }
+        : {}),
     },
     include: {
       trackedLinks: true,
+      quickReplyOptions: { orderBy: { order: "asc" } },
     },
   });
 
@@ -500,6 +573,7 @@ export async function PATCH(request: NextRequest) {
     trackedDestinationUrl,
     secondaryDestinationUrl,
     secondaryButtonLabel,
+    quickReplyOptions,
     ...automationData
   } = parsed.data;
 
@@ -535,11 +609,45 @@ export async function PATCH(request: NextRequest) {
     automationData.publicReplyMessages = [];
     automationData.publicReplyMessage = null;
   }
+  if (automationData.quickRepliesEnabled === false) {
+    automationData.quickRepliesMessage = null;
+    automationData.quickRepliesRetryEnabled = false;
+    automationData.quickRepliesRetryMessage = null;
+    automationData.skipIfTagged = false;
+  }
+  if (automationData.quickRepliesRetryEnabled === false) {
+    automationData.quickRepliesRetryMessage = null;
+  }
 
   const updated = await prisma.automation.update({
     where: { id: automationId },
     data: automationData,
   });
+
+  // Quick Reply options are diffed/replaced wholesale rather than merged —
+  // simpler than reconciling ids, and the client always sends the full
+  // ordered list when it changes anything here.
+  if (quickReplyOptions !== undefined) {
+    await prisma.$transaction([
+      prisma.quickReplyOption.deleteMany({ where: { automationId } }),
+      ...(quickReplyOptions.length > 0
+        ? [
+            prisma.quickReplyOption.createMany({
+              data: quickReplyOptions.map((option, index) => ({
+                automationId,
+                label: option.label,
+                payload: option.payload,
+                tagName: option.tagName,
+                responseMessage: option.responseMessage,
+                responseLinkUrl: option.responseLinkUrl || null,
+                responseLinkLabel: option.responseLinkLabel || null,
+                order: option.order ?? index,
+              })),
+            }),
+          ]
+        : []),
+    ]);
+  }
 
   // Update, create, or clear the campaign's primary tracked link when a
   // destination URL was supplied. `undefined` means "leave it alone".

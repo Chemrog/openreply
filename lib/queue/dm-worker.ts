@@ -5,11 +5,13 @@ import {
   MESSAGE_JOB_NAME,
   POSTBACK_JOB_NAME,
   FOLLOWUP_JOB_NAME,
+  QUICK_REPLY_JOB_NAME,
   type DmQueueJob,
   type ProcessCommentJob,
   type ProcessMessageJob,
   type ProcessPostbackJob,
   type ProcessFollowUpJob,
+  type ProcessQuickReplyJob,
 } from "./client";
 import { prisma } from "@/lib/db/client";
 import {
@@ -21,6 +23,7 @@ import {
   sendDirectMessage,
   sendDirectMessageWithButton,
   sendDirectMessageWithLinkButton,
+  sendDirectMessageWithQuickReplies,
   sendPrivateReply,
   sendPrivateReplyWithButton,
   sendPrivateReplyWithLinkButton,
@@ -188,6 +191,160 @@ async function sendRevealDirectMessage(
   }
 }
 
+type QuickRepliesAutomation = {
+  id: string;
+  workspaceId: string;
+  instagramAccountId: string;
+  quickRepliesEnabled: boolean;
+  quickRepliesMessage: string | null;
+  skipIfTagged: boolean;
+  instagramAccount: { instagramId: string };
+  quickReplyOptions: {
+    id: string;
+    label: string;
+    payload: string;
+    tagName: string;
+    responseMessage: string;
+    responseLinkUrl: string | null;
+    responseLinkLabel: string | null;
+  }[];
+};
+
+/** Upsert the Contact row for an inbound IGSID, scoped to the workspace. */
+async function upsertContact(
+  workspaceId: string,
+  instagramAccountId: string,
+  igsId: string,
+  username?: string | null
+) {
+  return prisma.contact.upsert({
+    where: { workspaceId_igsId: { workspaceId, igsId } },
+    create: {
+      workspaceId,
+      instagramAccountId,
+      igsId,
+      username: username ?? undefined,
+    },
+    update: username ? { username } : {},
+  });
+}
+
+/** The first Quick Reply option whose tagName the contact already carries. */
+async function findTaggedOption(
+  contactId: string,
+  options: QuickRepliesAutomation["quickReplyOptions"]
+) {
+  if (options.length === 0) return undefined;
+  const contactTags = await prisma.contactTag.findMany({
+    where: { contactId },
+    include: { tag: { select: { name: true } } },
+  });
+  const tagNames = new Set(contactTags.map((ct) => ct.tag.name));
+  return options.find((option) => tagNames.has(option.tagName));
+}
+
+async function sendQuickRepliesPrompt(
+  accessToken: string,
+  automation: QuickRepliesAutomation,
+  userId: string,
+  text: string
+): Promise<void> {
+  await sendDirectMessageWithQuickReplies(
+    accessToken,
+    automation.instagramAccount.instagramId,
+    userId,
+    text,
+    automation.quickReplyOptions.map((option) => ({
+      title: option.label,
+      payload: option.payload,
+    }))
+  );
+}
+
+async function sendQuickReplyOptionResponse(
+  accessToken: string,
+  automation: QuickRepliesAutomation,
+  userId: string,
+  option: QuickRepliesAutomation["quickReplyOptions"][number]
+): Promise<void> {
+  if (option.responseLinkUrl) {
+    await sendDirectMessageWithLinkButton(
+      accessToken,
+      automation.instagramAccount.instagramId,
+      userId,
+      option.responseMessage,
+      [{ title: option.responseLinkLabel || "Ver más", url: option.responseLinkUrl }]
+    );
+  } else {
+    await sendDirectMessage(
+      accessToken,
+      automation.instagramAccount.instagramId,
+      userId,
+      option.responseMessage
+    );
+  }
+}
+
+/**
+ * After a reveal DM has been delivered, run Quick Replies classification if
+ * the automation has it enabled: either skip straight to the tagged contact's
+ * role message (`skipIfTagged`), or prompt with the classification chips and
+ * open a ContactClassificationState so a later free-text reply can be retried.
+ * Best-effort — failures here never fail the caller's job.
+ */
+async function runQuickRepliesClassification(
+  accessToken: string,
+  automation: QuickRepliesAutomation,
+  contactId: string,
+  userId: string
+): Promise<void> {
+  if (!automation.quickRepliesEnabled || automation.quickReplyOptions.length === 0) {
+    return;
+  }
+
+  if (automation.skipIfTagged) {
+    const matched = await findTaggedOption(contactId, automation.quickReplyOptions);
+    if (matched) {
+      const usage = await reserveWorkspaceDMSend(automation.workspaceId);
+      if (!usage.allowed) return;
+      try {
+        await sendQuickReplyOptionResponse(accessToken, automation, userId, matched);
+      } catch (error) {
+        await releaseWorkspaceDMReservation(automation.workspaceId, usage.periodStart);
+        console.log(
+          "[DM Worker] Failed to send tagged role message:",
+          formatError(error)
+        );
+      }
+      return;
+    }
+  }
+
+  const usage = await reserveWorkspaceDMSend(automation.workspaceId);
+  if (!usage.allowed) return;
+  try {
+    await sendQuickRepliesPrompt(
+      accessToken,
+      automation,
+      userId,
+      automation.quickRepliesMessage || "¿Con cuál te identificas más?"
+    );
+    await prisma.contactClassificationState.upsert({
+      where: {
+        contactId_automationId: { contactId, automationId: automation.id },
+      },
+      create: { contactId, automationId: automation.id, retryCount: 0 },
+      update: { retryCount: 0 },
+    });
+  } catch (error) {
+    await releaseWorkspaceDMReservation(automation.workspaceId, usage.periodStart);
+    console.log(
+      "[DM Worker] Failed to send quick replies prompt:",
+      formatError(error)
+    );
+  }
+}
+
 async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
   const {
     instagramAccountId,
@@ -227,6 +384,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
         },
         orderBy: { createdAt: "asc" },
       },
+      quickReplyOptions: { orderBy: { order: "asc" } },
     },
     orderBy: { createdAt: "asc" },
   });
@@ -657,6 +815,24 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           errorMessage: null,
         },
       });
+
+      // Quick Replies classification only applies once the reveal link has
+      // actually gone out — not when this pass only sent an opening DM or a
+      // follow-gate prompt, since the real reveal is still pending a tap.
+      if (!useOpeningDm && !sendFollowPrompt && automation.quickRepliesEnabled) {
+        const contact = await upsertContact(
+          automation.workspaceId,
+          automation.instagramAccountId,
+          commenterId,
+          commenterName
+        );
+        await runQuickRepliesClassification(
+          accessToken,
+          automation,
+          contact.id,
+          commenterId
+        );
+      }
     } catch (error) {
       await releaseWorkspaceDMReservation(
         automation.workspaceId,
@@ -959,9 +1135,84 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
         select: { slug: true, label: true, destinationUrl: true },
         orderBy: { createdAt: "asc" },
       },
+      quickReplyOptions: { orderBy: { order: "asc" } },
     },
     orderBy: { createdAt: "asc" },
   });
+
+  // Free-text reply while a Quick Replies classification prompt is awaiting a
+  // tap: resend the prompt (up to the automation's retry cap) instead of
+  // leaving the contact stuck. Independent of whether this message also
+  // matches a dmTrigger keyword below.
+  const account = await prisma.instagramAccount.findUnique({
+    where: { instagramId: instagramAccountId },
+    select: { workspaceId: true },
+  });
+  if (account) {
+    const contact = await prisma.contact.findUnique({
+      where: {
+        workspaceId_igsId: { workspaceId: account.workspaceId, igsId: senderId },
+      },
+    });
+    if (contact) {
+      const states = await prisma.contactClassificationState.findMany({
+        where: { contactId: contact.id },
+        include: {
+          automation: {
+            include: {
+              instagramAccount: true,
+              quickReplyOptions: { orderBy: { order: "asc" } },
+            },
+          },
+        },
+      });
+
+      for (const state of states) {
+        const automation = state.automation;
+        if (
+          !automation.isActive ||
+          !automation.quickRepliesEnabled ||
+          !automation.quickRepliesRetryEnabled
+        ) {
+          continue;
+        }
+        if (automation.instagramAccount.instagramId !== instagramAccountId) continue;
+        if (state.retryCount >= automation.quickRepliesRetryCount) continue;
+        if (!automation.instagramAccount.accessToken) continue;
+
+        let retryAccessToken: string;
+        try {
+          retryAccessToken = decryptToken(automation.instagramAccount.accessToken);
+        } catch {
+          continue;
+        }
+
+        const usage = await reserveWorkspaceDMSend(automation.workspaceId);
+        if (!usage.allowed) continue;
+
+        try {
+          await sendQuickRepliesPrompt(
+            retryAccessToken,
+            automation,
+            senderId,
+            automation.quickRepliesRetryMessage ||
+              automation.quickRepliesMessage ||
+              "Por favor, toca una de las opciones para poder ayudarte."
+          );
+          await prisma.contactClassificationState.update({
+            where: { id: state.id },
+            data: { retryCount: { increment: 1 } },
+          });
+        } catch (error) {
+          await releaseWorkspaceDMReservation(automation.workspaceId, usage.periodStart);
+          console.log(
+            "[DM Worker] Failed to resend quick replies retry prompt:",
+            formatError(error)
+          );
+        }
+      }
+    }
+  }
 
   const dedupeId = `dm:${messageId}`;
 
@@ -1135,6 +1386,21 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
             }
           );
         }
+
+        if (automation.quickRepliesEnabled) {
+          const contact = await upsertContact(
+            automation.workspaceId,
+            automation.instagramAccountId,
+            senderId,
+            commenterName
+          );
+          await runQuickRepliesClassification(
+            accessToken,
+            automation,
+            contact.id,
+            senderId
+          );
+        }
       }
 
       await prisma.dmLog.upsert({
@@ -1186,6 +1452,89 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
   }
 }
 
+/**
+ * Resolve a tapped Quick Reply chip: tag the contact, deliver the option's
+ * role-specific response, and clear the ContactClassificationState — the
+ * classification is resolved regardless of whether the response send
+ * succeeds, so a flaky send does not leave the contact stuck re-prompting.
+ */
+async function processQuickReply(job: Job<ProcessQuickReplyJob>): Promise<void> {
+  const { instagramAccountId, workspaceId, senderId, payload } = job.data;
+
+  const option = await prisma.quickReplyOption.findFirst({
+    where: {
+      payload,
+      automation: {
+        isActive: true,
+        quickRepliesEnabled: true,
+        workspaceId,
+        instagramAccount: { instagramId: instagramAccountId },
+      },
+    },
+    include: {
+      automation: { include: { instagramAccount: true } },
+    },
+  });
+  if (!option) return;
+
+  const automation = option.automation;
+  if (!automation.instagramAccount.accessToken) return;
+
+  let accessToken: string;
+  try {
+    accessToken = decryptToken(automation.instagramAccount.accessToken);
+  } catch {
+    return;
+  }
+
+  const contact = await upsertContact(
+    workspaceId,
+    automation.instagramAccountId,
+    senderId
+  );
+
+  const tag = await prisma.tag.upsert({
+    where: { workspaceId_name: { workspaceId, name: option.tagName } },
+    create: { workspaceId, name: option.tagName },
+    update: {},
+  });
+
+  await prisma.contactTag.upsert({
+    where: { contactId_tagId: { contactId: contact.id, tagId: tag.id } },
+    create: { contactId: contact.id, tagId: tag.id },
+    update: {},
+  });
+
+  const usage = await reserveWorkspaceDMSend(workspaceId);
+  if (usage.allowed) {
+    try {
+      await sendQuickReplyOptionResponse(
+        accessToken,
+        automation as unknown as QuickRepliesAutomation,
+        senderId,
+        option
+      );
+    } catch (error) {
+      await releaseWorkspaceDMReservation(workspaceId, usage.periodStart);
+      console.log(
+        "[DM Worker] Failed to send quick reply option response:",
+        formatError(error)
+      );
+    }
+  }
+
+  try {
+    await prisma.contactClassificationState.deleteMany({
+      where: { contactId: contact.id, automationId: automation.id },
+    });
+  } catch (error) {
+    console.log(
+      "[DM Worker] Failed to clear classification state:",
+      formatError(error)
+    );
+  }
+}
+
 async function processJob(job: Job<DmQueueJob>): Promise<void> {
   if (job.name === POSTBACK_JOB_NAME) {
     return processPostback(job as Job<ProcessPostbackJob>);
@@ -1195,6 +1544,9 @@ async function processJob(job: Job<DmQueueJob>): Promise<void> {
   }
   if (job.name === MESSAGE_JOB_NAME) {
     return processMessage(job as Job<ProcessMessageJob>);
+  }
+  if (job.name === QUICK_REPLY_JOB_NAME) {
+    return processQuickReply(job as Job<ProcessQuickReplyJob>);
   }
   return processComment(job as Job<ProcessCommentJob>);
 }

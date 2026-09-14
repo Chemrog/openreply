@@ -83,6 +83,7 @@ interface WebhookEntry {
       is_deleted?: boolean;
       is_unsupported?: boolean;
       attachments?: Array<{ type?: string }>;
+      quick_reply?: { payload?: string };
     };
   }>;
 }
@@ -92,6 +93,18 @@ export interface WebhookMessageEvent {
   messageId: string;
   messageText: string;
   senderId: string;
+}
+
+/**
+ * A tapped Quick Reply chip. Instagram delivers this as a standard `messaging`
+ * webhook event with `message.quick_reply.payload` set, rather than a
+ * `messaging_postbacks` event.
+ */
+export interface WebhookQuickReplyEvent {
+  instagramAccountId: string;
+  messageId: string;
+  senderId: string;
+  payload: string;
 }
 
 export interface WebhookPostbackEvent {
@@ -218,6 +231,8 @@ export function parseMessageEvents(
       if (message.is_echo || message.is_deleted || message.is_unsupported) {
         continue;
       }
+      // A tapped Quick Reply chip is routed separately by parseQuickReplyEvents.
+      if (message.quick_reply?.payload) continue;
 
       const text = message.text?.trim();
       const messageId = message.mid;
@@ -233,6 +248,49 @@ export function parseMessageEvents(
         messageId,
         messageText: text,
         senderId,
+      });
+    }
+  }
+
+  return events;
+}
+
+/**
+ * Parse tapped Quick Reply chips out of a webhook payload. Instagram delivers
+ * these as a standard `messaging` event with `message.quick_reply.payload`
+ * set, rather than a `messaging_postbacks` event — so they must be pulled out
+ * before parseMessageEvents would otherwise treat them as free-text messages.
+ */
+export function parseQuickReplyEvents(
+  payload: WebhookPayload
+): WebhookQuickReplyEvent[] {
+  const events: WebhookQuickReplyEvent[] = [];
+
+  if (payload.object !== "instagram") return events;
+
+  for (const entry of payload.entry ?? []) {
+    for (const messaging of entry.messaging ?? []) {
+      const message = messaging.message;
+      if (!message) continue;
+      if (message.is_echo || message.is_deleted || message.is_unsupported) {
+        continue;
+      }
+
+      const quickReplyPayload = message.quick_reply?.payload;
+      const messageId = message.mid;
+      const senderId = messaging.sender?.id;
+      const accountId = entry.id ?? messaging.recipient?.id;
+
+      if (!quickReplyPayload || !messageId || !senderId || !accountId) {
+        continue;
+      }
+      if (senderId === accountId) continue;
+
+      events.push({
+        instagramAccountId: accountId,
+        messageId,
+        senderId,
+        payload: quickReplyPayload,
       });
     }
   }

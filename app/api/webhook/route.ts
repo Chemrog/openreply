@@ -5,10 +5,15 @@ import {
   parseCommentEvents,
   parseMessageEvents,
   parsePostbackEvents,
+  parseQuickReplyEvents,
   parseReadEvents,
   verifyWebhookSignature,
 } from "@/lib/meta/webhook";
-import { MESSAGE_JOB_NAME, POSTBACK_JOB_NAME } from "@/lib/queue/client";
+import {
+  MESSAGE_JOB_NAME,
+  POSTBACK_JOB_NAME,
+  QUICK_REPLY_JOB_NAME,
+} from "@/lib/queue/client";
 import { Prisma } from "@/app/generated/prisma/client";
 
 const OPENING_DM_READ_FALLBACK_DELAY_MS = 5 * 60 * 1000;
@@ -137,6 +142,41 @@ export async function POST(request: NextRequest) {
           ).replace(/:/g, "_")}`,
         }
       );
+    }
+
+    // Tapped Quick Reply chips → resolve the classification option.
+    const quickReplyEvents = parseQuickReplyEvents(
+      payload as Parameters<typeof parseQuickReplyEvents>[0]
+    );
+
+    for (const event of quickReplyEvents) {
+      const account = await prisma.instagramAccount.findUnique({
+        where: { instagramId: event.instagramAccountId },
+        select: { workspaceId: true },
+      });
+
+      if (!account) continue;
+
+      await queue.add(
+        QUICK_REPLY_JOB_NAME,
+        {
+          instagramAccountId: event.instagramAccountId,
+          workspaceId: account.workspaceId,
+          senderId: event.senderId,
+          payload: event.payload,
+          messageId: event.messageId,
+        },
+        {
+          jobId: `quickreply_${event.instagramAccountId}_${Buffer.from(
+            event.messageId
+          ).toString("base64url")}`,
+        }
+      );
+
+      await prisma.webhookEvent.update({
+        where: { id: webhookEvent.id },
+        data: { workspaceId: account.workspaceId },
+      });
     }
 
     // Inbound DMs → keyword-triggered autoreply.
