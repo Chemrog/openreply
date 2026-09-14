@@ -18,6 +18,7 @@ import {
   MetaApiError,
   RateLimitError,
   TokenExpiredError,
+  getInstagramUserProfile,
   getUserFollowStatus,
   sendCommentReply,
   sendDirectMessage,
@@ -210,23 +211,68 @@ type QuickRepliesAutomation = {
   }[];
 };
 
-/** Upsert the Contact row for an inbound IGSID, scoped to the workspace. */
+const PROFILE_SYNC_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Upsert the Contact row for an inbound IGSID, scoped to the workspace.
+ * Always bumps lastInteractionAt. If an accessToken is supplied and the
+ * contact's profile hasn't been synced in the last 24h, best-effort enriches
+ * it with the full Instagram profile — this never blocks or fails the main
+ * DM flow.
+ */
 async function upsertContact(
   workspaceId: string,
   instagramAccountId: string,
   igsId: string,
-  username?: string | null
+  username?: string | null,
+  accessToken?: string | null
 ) {
-  return prisma.contact.upsert({
+  const contact = await prisma.contact.upsert({
     where: { workspaceId_igsId: { workspaceId, igsId } },
     create: {
       workspaceId,
       instagramAccountId,
       igsId,
       username: username ?? undefined,
+      lastInteractionAt: new Date(),
     },
-    update: username ? { username } : {},
+    update: {
+      ...(username ? { username } : {}),
+      lastInteractionAt: new Date(),
+    },
   });
+
+  const needsSync =
+    !contact.profileSyncedAt ||
+    Date.now() - contact.profileSyncedAt.getTime() > PROFILE_SYNC_MAX_AGE_MS;
+
+  if (accessToken && needsSync) {
+    try {
+      const profile = await getInstagramUserProfile(accessToken, igsId);
+      if (profile) {
+        await prisma.contact.update({
+          where: { id: contact.id },
+          data: {
+            name: profile.name ?? undefined,
+            username: profile.username ?? undefined,
+            profilePicUrl: profile.profilePic ?? undefined,
+            followerCount: profile.followerCount ?? undefined,
+            isVerifiedUser: profile.isVerifiedUser ?? undefined,
+            isFollowingBusiness: profile.isUserFollowBusiness ?? undefined,
+            isBusinessFollowingUser: profile.isBusinessFollowUser ?? undefined,
+            profileSyncedAt: new Date(),
+          },
+        });
+      }
+    } catch (error) {
+      console.log(
+        "[DM Worker] Contact profile enrichment failed:",
+        formatError(error)
+      );
+    }
+  }
+
+  return contact;
 }
 
 /** The first Quick Reply option whose tagName the contact already carries. */
@@ -824,7 +870,8 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           automation.workspaceId,
           automation.instagramAccountId,
           commenterId,
-          commenterName
+          commenterName,
+          accessToken
         );
         await runQuickRepliesClassification(
           accessToken,
@@ -1392,7 +1439,8 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
             automation.workspaceId,
             automation.instagramAccountId,
             senderId,
-            commenterName
+            commenterName,
+            accessToken
           );
           await runQuickRepliesClassification(
             accessToken,
@@ -1490,7 +1538,9 @@ async function processQuickReply(job: Job<ProcessQuickReplyJob>): Promise<void> 
   const contact = await upsertContact(
     workspaceId,
     automation.instagramAccountId,
-    senderId
+    senderId,
+    null,
+    accessToken
   );
 
   const tag = await prisma.tag.upsert({

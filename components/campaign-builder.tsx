@@ -1327,6 +1327,9 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
             followUpEnabled={followUpEnabled}
             followUpMessage={followUpMessage}
             followUpDelayMinutes={followUpDelayMinutes}
+            quickRepliesEnabled={quickRepliesEnabled}
+            quickRepliesMessage={quickRepliesMessage}
+            quickReplyOptions={quickReplyOptions}
           />
         </div>
       </div>

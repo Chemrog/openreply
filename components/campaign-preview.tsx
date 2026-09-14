@@ -40,6 +40,9 @@ interface CampaignPreviewProps {
   followUpEnabled: boolean;
   followUpMessage: string;
   followUpDelayMinutes?: number;
+  quickRepliesEnabled?: boolean;
+  quickRepliesMessage?: string;
+  quickReplyOptions?: { label: string }[];
 }
 
 const SAMPLE_USER = "username";
@@ -323,6 +326,9 @@ function DmScreen({
   followUpDelayMinutes = 0,
   linkUrl,
   inboundMessage,
+  quickRepliesEnabled = false,
+  quickRepliesMessage = "",
+  quickReplyOptions = [],
 }: {
   username: string;
   avatarUrl: string | null;
@@ -343,6 +349,9 @@ function DmScreen({
   followUpDelayMinutes?: number;
   // Present on the keyword-trigger thread: the DM the user sends to start it.
   inboundMessage?: string;
+  quickRepliesEnabled?: boolean;
+  quickRepliesMessage?: string;
+  quickReplyOptions?: { label: string }[];
 }) {
   return (
     <div className="flex h-full flex-col text-white">
@@ -440,6 +449,30 @@ function DmScreen({
             </div>
           );
         })()}
+        {quickRepliesEnabled && (
+          <>
+            <div className="flex items-end gap-2">
+              <Avatar url={avatarUrl} size={24} />
+              <div className="max-w-[80%] rounded-2xl rounded-bl-md bg-zinc-800 px-3 py-2">
+                <p className="whitespace-pre-wrap text-sm">
+                  {quickRepliesMessage.trim() || "¿Cuál de estas opciones te describe mejor?"}
+                </p>
+              </div>
+            </div>
+            {quickReplyOptions.length > 0 && (
+              <div className="flex flex-wrap justify-end gap-1.5 pl-8">
+                {quickReplyOptions.map((option, i) => (
+                  <span
+                    key={i}
+                    className="rounded-full border border-accent px-3 py-1 text-xs font-semibold text-accent"
+                  >
+                    {option.label.trim() || `Opción ${i + 1}`}
+                  </span>
+                ))}
+              </div>
+            )}
+          </>
+        )}
         {followUpEnabled && (
           <>
             {followUpDelayMinutes > 0 && (
@@ -528,6 +561,9 @@ export default function CampaignPreview(props: CampaignPreviewProps) {
             followUpMessage={props.followUpMessage}
             followUpDelayMinutes={props.followUpDelayMinutes}
             linkUrl={props.linkUrl}
+            quickRepliesEnabled={props.quickRepliesEnabled}
+            quickRepliesMessage={props.quickRepliesMessage}
+            quickReplyOptions={props.quickReplyOptions}
           />
         )}
         {activeTab === "dmTrigger" && (

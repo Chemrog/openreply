@@ -283,6 +283,62 @@ export async function getUserFollowStatus(
   }
 }
 
+export interface InstagramUserProfile {
+  name: string | null;
+  username: string | null;
+  profilePic: string | null;
+  followerCount: number | null;
+  isVerifiedUser: boolean | null;
+  isUserFollowBusiness: boolean | null;
+  isBusinessFollowUser: boolean | null;
+}
+
+/**
+ * Best-effort fetch of a richer Instagram user profile for enrichment
+ * purposes (e.g. Contact syncing). Never throws — returns null on any
+ * failure so callers can safely ignore it.
+ */
+export async function getInstagramUserProfile(
+  accessToken: string,
+  recipientId: string
+): Promise<InstagramUserProfile | null> {
+  const url = new URL(`${instagramGraphBase()}/${recipientId}`);
+  url.searchParams.set(
+    "fields",
+    "name,username,profile_pic,follower_count,is_verified_user,is_user_follow_business,is_business_follow_user"
+  );
+
+  try {
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return {
+      name: typeof data?.name === "string" ? data.name : null,
+      username: typeof data?.username === "string" ? data.username : null,
+      profilePic: typeof data?.profile_pic === "string" ? data.profile_pic : null,
+      followerCount:
+        typeof data?.follower_count === "number" ? data.follower_count : null,
+      isVerifiedUser:
+        typeof data?.is_verified_user === "boolean"
+          ? data.is_verified_user
+          : null,
+      isUserFollowBusiness:
+        typeof data?.is_user_follow_business === "boolean"
+          ? data.is_user_follow_business
+          : null,
+      isBusinessFollowUser:
+        typeof data?.is_business_follow_user === "boolean"
+          ? data.is_business_follow_user
+          : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * A tappable web_url button in a DM button template. Instagram's button
  * template supports up to 3 buttons; titles are capped at 20 chars by Meta.

@@ -269,6 +269,15 @@ model Contact {
   igsId              String
   username           String?
 
+  name                    String?
+  profilePicUrl           String?
+  followerCount           Int?
+  isVerifiedUser          Boolean?
+  isFollowingBusiness     Boolean?
+  isBusinessFollowingUser Boolean?
+  profileSyncedAt         DateTime?
+  lastInteractionAt       DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
