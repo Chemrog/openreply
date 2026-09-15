@@ -1187,14 +1187,42 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
     orderBy: { createdAt: "asc" },
   });
 
+  // Every inbound DM creates/updates a Contact, independent of whether it
+  // matches any automation — Contacts should reflect everyone who has
+  // messaged the account, not just people who triggered a campaign.
+  const account = await prisma.instagramAccount.findUnique({
+    where: { instagramId: instagramAccountId },
+    select: { id: true, workspaceId: true, accessToken: true },
+  });
+  if (account) {
+    let accountAccessToken: string | null = null;
+    if (account.accessToken) {
+      try {
+        accountAccessToken = decryptToken(account.accessToken);
+      } catch {
+        accountAccessToken = null;
+      }
+    }
+    try {
+      await upsertContact(
+        account.workspaceId,
+        account.id,
+        senderId,
+        undefined,
+        accountAccessToken
+      );
+    } catch (error) {
+      console.log(
+        "[DM Worker] Failed to upsert contact for inbound message:",
+        formatError(error)
+      );
+    }
+  }
+
   // Free-text reply while a Quick Replies classification prompt is awaiting a
   // tap: resend the prompt (up to the automation's retry cap) instead of
   // leaving the contact stuck. Independent of whether this message also
   // matches a dmTrigger keyword below.
-  const account = await prisma.instagramAccount.findUnique({
-    where: { instagramId: instagramAccountId },
-    select: { workspaceId: true },
-  });
   if (account) {
     const contact = await prisma.contact.findUnique({
       where: {
