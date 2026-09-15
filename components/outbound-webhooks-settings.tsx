@@ -141,7 +141,8 @@ export default function OutboundWebhooksSettings() {
         <div>
           <h2 className="text-base font-semibold">Webhooks salientes</h2>
           <p className="mt-0.5 text-xs text-muted">
-            Envía un POST a tu CRM cada vez que llega un contacto nuevo.
+            Envía un POST a tu CRM cuando llega un contacto nuevo y cada vez
+            que uno existente vuelve a escribir o cambia de etiquetas.
           </p>
         </div>
         <button
@@ -156,10 +157,13 @@ export default function OutboundWebhooksSettings() {
       {showSchema && (
         <div className="mb-6 rounded-lg border border-border bg-surface/70 p-4 text-xs">
           <p className="mb-2 text-muted">
-            Cada vez que llega un contacto nuevo (sin importar si viene de una
-            automatización o de un mensaje directo cualquiera), hacemos un{" "}
-            <code className="rounded bg-surface-hover px-1">POST</code> con este
-            cuerpo JSON:
+            Mandamos un <code className="rounded bg-surface-hover px-1">POST</code> con
+            este cuerpo JSON en dos momentos: cuando un contacto escribe por
+            primera vez (<code>contact.created</code>) y cada vez que ese
+            mismo contacto vuelve a escribir, se le asigna/quita una etiqueta,
+            o se le refresca el perfil (<code>contact.updated</code>).
+            Aplica sin importar si vino de una automatización o de un mensaje
+            directo cualquiera:
           </p>
           <pre className="overflow-x-auto rounded bg-black/40 p-3 text-[11px] leading-relaxed text-zinc-300">
             {JSON.stringify(SAMPLE_PAYLOAD, null, 2)}
@@ -170,7 +174,7 @@ export default function OutboundWebhooksSettings() {
           <ul className="mt-1 list-disc space-y-1 pl-4 text-muted">
             <li>
               <code className="rounded bg-surface-hover px-1">X-OpenReply-Event</code>
-              : el nombre del evento (hoy solo <code>contact.created</code>).
+              : <code>contact.created</code> o <code>contact.updated</code>.
             </li>
             <li>
               <code className="rounded bg-surface-hover px-1">

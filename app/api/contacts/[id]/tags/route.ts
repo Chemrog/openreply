@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentWorkspaceId } from "@/lib/auth";
 import { prisma } from "@/lib/db/client";
+import { triggerContactWebhooks } from "@/lib/integrations/outbound-webhooks";
 
 // Assign a tag to a contact by name, creating the Tag if it doesn't exist yet
 // in this workspace.
@@ -48,6 +49,8 @@ export async function POST(
     create: { contactId: contact.id, tagId: tag.id },
     update: {},
   });
+
+  void triggerContactWebhooks("contact.updated", contact.id).catch(() => {});
 
   return NextResponse.json({ success: true, data: { tag } });
 }

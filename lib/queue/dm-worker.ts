@@ -42,7 +42,7 @@ import {
   renderMessageWithTracking,
   renderMessageWithoutLink,
 } from "@/lib/tracking/message";
-import { triggerContactCreatedWebhooks } from "@/lib/integrations/outbound-webhooks";
+import { triggerContactWebhooks } from "@/lib/integrations/outbound-webhooks";
 
 const BACKOFF_DELAYS = [5 * 60 * 1000, 15 * 60 * 1000, 45 * 60 * 1000];
 
@@ -247,29 +247,6 @@ async function upsertContact(
   // this equality is a reliable "was this row just created?" check without
   // restructuring the upsert into a separate find+create.
   const wasCreated = contact.createdAt.getTime() === contact.updatedAt.getTime();
-  if (wasCreated) {
-    void triggerContactCreatedWebhooks(workspaceId, {
-      event: "contact.created",
-      workspaceId,
-      contact: {
-        id: contact.id,
-        igsId: contact.igsId,
-        username: contact.username,
-        name: contact.name,
-        profilePicUrl: contact.profilePicUrl,
-        followerCount: contact.followerCount,
-        isVerifiedUser: contact.isVerifiedUser,
-        isFollowingBusiness: contact.isFollowingBusiness,
-        isBusinessFollowingUser: contact.isBusinessFollowingUser,
-        tags: [],
-        createdAt: contact.createdAt.toISOString(),
-        lastInteractionAt: contact.lastInteractionAt?.toISOString() ?? null,
-      },
-      sentAt: new Date().toISOString(),
-    }).catch((error) => {
-      console.log("[DM Worker] contact.created webhook dispatch failed:", formatError(error));
-    });
-  }
 
   const needsSync =
     !contact.profileSyncedAt ||
@@ -300,6 +277,16 @@ async function upsertContact(
       );
     }
   }
+
+  // Fired last so the payload reflects any profile fields just synced above
+  // — "created" the first time a contact is seen, "updated" on every later
+  // comment/message from them (bumps lastInteractionAt at minimum) — so a
+  // connected CRM stays in sync without polling.
+  void triggerContactWebhooks(wasCreated ? "contact.created" : "contact.updated", contact.id).catch(
+    (error) => {
+      console.log("[DM Worker] contact webhook dispatch failed:", formatError(error));
+    }
+  );
 
   return contact;
 }
@@ -1610,6 +1597,12 @@ async function processQuickReply(job: Job<ProcessQuickReplyJob>): Promise<void> 
     where: { contactId_tagId: { contactId: contact.id, tagId: tag.id } },
     create: { contactId: contact.id, tagId: tag.id },
     update: {},
+  });
+
+  // upsertContact() already fired a webhook above, but that was before this
+  // tag existed — fire again now that the CRM-relevant tag list changed.
+  void triggerContactWebhooks("contact.updated", contact.id).catch((error) => {
+    console.log("[DM Worker] contact webhook dispatch failed:", formatError(error));
   });
 
   const usage = await reserveWorkspaceDMSend(workspaceId);

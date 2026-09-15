@@ -75,6 +75,10 @@ model Workspace {
   usagePeriodStart  DateTime @default(now())
   dmsSentThisPeriod Int      @default(0)
 
+  /// Bearer key for the public /api/v1 integration API (e.g. a CRM sending a
+  /// DM through OpenReply). Null until the owner generates one in Settings.
+  apiKey String? @unique
+
   members           WorkspaceMember[]
   invitations       WorkspaceInvitation[]
   instagramAccounts InstagramAccount[]

@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState } from "react";
 import type { AccountOption } from "@/components/account-select";
 import { InstagramConnectNotice } from "@/components/instagram-connect-notice";
 import OutboundWebhooksSettings from "@/components/outbound-webhooks-settings";
+import ApiKeySettings from "@/components/api-key-settings";
 
 interface SettingsData {
   workspace: {
@@ -320,6 +321,8 @@ export default function SettingsPage() {
           </form>
         )}
       </section>
+
+      <ApiKeySettings />
 
       <OutboundWebhooksSettings />
 

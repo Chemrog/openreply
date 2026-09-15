@@ -12,8 +12,10 @@ import { prisma } from "@/lib/db/client";
 
 const DELIVERY_TIMEOUT_MS = 8000;
 
-export interface ContactCreatedPayload {
-  event: "contact.created";
+export type ContactEvent = "contact.created" | "contact.updated";
+
+export interface ContactEventPayload {
+  event: ContactEvent;
   workspaceId: string;
   contact: {
     id: string;
@@ -120,22 +122,56 @@ async function deliver(
 }
 
 /**
- * Fire all enabled `contact.created` webhooks for a workspace. Fire-and-
- * forget from the caller's perspective — never throws, never awaited by the
- * DM-sending critical path.
+ * Fire every enabled webhook for a workspace with the given contact event.
+ * All enabled webhooks receive both `contact.created` and `contact.updated`
+ * — there's currently no per-webhook event filter, since a CRM sync
+ * typically wants both anyway (the `event` column on OutboundWebhook is
+ * legacy from an earlier single-event design and unused for filtering).
+ * Looks the contact up fresh (by id) so callers never have to assemble the
+ * payload themselves or worry about stale data. Fire-and-forget from the
+ * caller's perspective — never throws, never awaited by the DM-sending
+ * critical path.
  */
-export async function triggerContactCreatedWebhooks(
-  workspaceId: string,
-  payload: ContactCreatedPayload
+export async function triggerContactWebhooks(
+  event: ContactEvent,
+  contactId: string
 ): Promise<void> {
   try {
-    const webhooks = await prisma.outboundWebhook.findMany({
-      where: { workspaceId, event: "contact.created", enabled: true },
+    const contact = await prisma.contact.findUnique({
+      where: { id: contactId },
+      include: { tags: { include: { tag: { select: { name: true } } } } },
     });
+    if (!contact) return;
+
+    const webhooks = await prisma.outboundWebhook.findMany({
+      where: { workspaceId: contact.workspaceId, enabled: true },
+    });
+    if (webhooks.length === 0) return;
+
+    const payload: ContactEventPayload = {
+      event,
+      workspaceId: contact.workspaceId,
+      contact: {
+        id: contact.id,
+        igsId: contact.igsId,
+        username: contact.username,
+        name: contact.name,
+        profilePicUrl: contact.profilePicUrl,
+        followerCount: contact.followerCount,
+        isVerifiedUser: contact.isVerifiedUser,
+        isFollowingBusiness: contact.isFollowingBusiness,
+        isBusinessFollowingUser: contact.isBusinessFollowingUser,
+        tags: contact.tags.map((ct) => ct.tag.name),
+        createdAt: contact.createdAt.toISOString(),
+        lastInteractionAt: contact.lastInteractionAt?.toISOString() ?? null,
+      },
+      sentAt: new Date().toISOString(),
+    };
+
     await Promise.all(webhooks.map((webhook) => deliver(webhook, payload)));
   } catch (error) {
     console.log(
-      "[OutboundWebhook] Failed to trigger contact.created webhooks:",
+      `[OutboundWebhook] Failed to trigger ${event} webhooks:`,
       error instanceof Error ? error.message : "Unknown error"
     );
   }
@@ -148,7 +184,7 @@ export async function sendTestWebhook(webhook: {
   secret: string;
   workspaceId: string;
 }): Promise<void> {
-  const samplePayload: ContactCreatedPayload = {
+  const samplePayload: ContactEventPayload = {
     event: "contact.created",
     workspaceId: webhook.workspaceId,
     contact: {

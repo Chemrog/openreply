@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentWorkspaceId } from "@/lib/auth";
 import { prisma } from "@/lib/db/client";
+import { triggerContactWebhooks } from "@/lib/integrations/outbound-webhooks";
 
 export async function DELETE(
   request: NextRequest,
@@ -33,6 +34,8 @@ export async function DELETE(
   await prisma.contactTag.deleteMany({
     where: { contactId: contact.id, tagId },
   });
+
+  void triggerContactWebhooks("contact.updated", contact.id).catch(() => {});
 
   return NextResponse.json({ success: true, data: { deleted: true } });
 }
