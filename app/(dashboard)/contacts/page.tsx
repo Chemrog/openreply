@@ -20,6 +20,9 @@ interface Contact {
   name: string | null;
   profilePicUrl: string | null;
   followerCount: number | null;
+  isVerifiedUser: boolean | null;
+  isFollowingBusiness: boolean | null;
+  isBusinessFollowingUser: boolean | null;
   lastInteractionAt: string | null;
   tags: Tag[];
 }
@@ -73,10 +76,19 @@ export default function ContactsPage() {
     ).values()
   );
 
+  const exportHref = (() => {
+    const params = new URLSearchParams();
+    if (search.trim()) params.set("search", search.trim());
+    if (tagFilter) params.set("tag", tagFilter);
+    const qs = params.toString();
+    return `/api/contacts/export${qs ? `?${qs}` : ""}`;
+  })();
+
   return (
     <div className="space-y-6">
-      {/* Search + tag filter */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+      {/* Search + tag filter + export */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
         <input
           value={search}
           onChange={(e) => {
@@ -121,6 +133,13 @@ export default function ContactsPage() {
             ))}
           </div>
         )}
+        </div>
+        <a
+          href={exportHref}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-xs font-medium text-muted hover:border-border-hover hover:text-foreground"
+        >
+          ⬇ Exportar CSV
+        </a>
       </div>
 
       {/* Table */}
@@ -131,6 +150,7 @@ export default function ContactsPage() {
               <tr className="border-b border-border text-left">
                 <th className="px-4 py-4 text-xs font-semibold text-muted uppercase tracking-wider sm:px-6">Contacto</th>
                 <th className="px-4 py-4 text-xs font-semibold text-muted uppercase tracking-wider sm:px-6">Etiquetas</th>
+                <th className="px-4 py-4 text-xs font-semibold text-muted uppercase tracking-wider sm:px-6">Sigue</th>
                 <th className="px-4 py-4 text-xs font-semibold text-muted uppercase tracking-wider sm:px-6">Seguidores</th>
                 <th className="px-4 py-4 text-xs font-semibold text-muted uppercase tracking-wider sm:px-6">Última interacción</th>
               </tr>
@@ -140,7 +160,7 @@ export default function ContactsPage() {
                 <>
                   {[...Array(5)].map((_, i) => (
                     <tr key={i}>
-                      <td colSpan={4} className="px-4 py-4 sm:px-6">
+                      <td colSpan={5} className="px-4 py-4 sm:px-6">
                         <div className="h-4 bg-surface-hover rounded" />
                       </td>
                     </tr>
@@ -149,7 +169,7 @@ export default function ContactsPage() {
               )}
               {!loading && contacts.length === 0 && (
                 <tr>
-                  <td colSpan={4} className="px-4 py-12 text-center text-muted sm:px-6">
+                  <td colSpan={5} className="px-4 py-12 text-center text-muted sm:px-6">
                     Aún no tienes contactos — aparecerán aquí cuando alguien te escriba
                   </td>
                 </tr>
@@ -172,9 +192,19 @@ export default function ContactsPage() {
                           }}
                         />
                         <span>
-                          {contact.username
-                            ? `@${contact.username}`
-                            : contact.name ?? contact.id.slice(0, 8)}
+                          <span className="flex items-center gap-1">
+                            {contact.username
+                              ? `@${contact.username}`
+                              : contact.name ?? contact.id.slice(0, 8)}
+                            {contact.isVerifiedUser && (
+                              <span className="text-accent" title="Verificado">✓</span>
+                            )}
+                          </span>
+                          {contact.name && contact.username && (
+                            <span className="block text-xs font-normal text-muted">
+                              {contact.name}
+                            </span>
+                          )}
                         </span>
                       </Link>
                     </td>
@@ -189,6 +219,16 @@ export default function ContactsPage() {
                           </span>
                         ))}
                       </div>
+                    </td>
+                    <td className="px-4 py-4 text-xs sm:px-6">
+                      {contact.isFollowingBusiness == null ? (
+                        <span className="text-muted">—</span>
+                      ) : (
+                        <div className="flex flex-col gap-0.5 text-muted">
+                          <span>Te sigue: {contact.isFollowingBusiness ? "Sí" : "No"}</span>
+                          <span>Lo sigues: {contact.isBusinessFollowingUser ? "Sí" : "No"}</span>
+                        </div>
+                      )}
                     </td>
                     <td className="px-4 py-4 text-muted sm:px-6">
                       {contact.followerCount ?? "—"}

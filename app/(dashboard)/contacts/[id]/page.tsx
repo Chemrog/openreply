@@ -44,6 +44,9 @@ export default function ContactDetailPage() {
   const [contact, setContact] = useState<ContactDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [removingTagId, setRemovingTagId] = useState<string | null>(null);
+  const [newTag, setNewTag] = useState("");
+  const [addingTag, setAddingTag] = useState(false);
+  const [tagError, setTagError] = useState<string | null>(null);
 
   const fetchContact = useCallback(async () => {
     try {
@@ -58,7 +61,10 @@ export default function ContactDetailPage() {
   }, [params.id]);
 
   useEffect(() => {
-    void fetchContact();
+    const timer = window.setTimeout(() => {
+      void fetchContact();
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [fetchContact]);
 
   async function removeTag(tagId: string) {
@@ -75,6 +81,35 @@ export default function ContactDetailPage() {
       console.error("Failed to remove tag:", err);
     } finally {
       setRemovingTagId(null);
+    }
+  }
+
+  async function addTag() {
+    const name = newTag.trim();
+    if (!contact || !name) return;
+    if (contact.tags.some((t) => t.name.toLowerCase() === name.toLowerCase())) {
+      setTagError("Ese contacto ya tiene esa etiqueta");
+      return;
+    }
+    setAddingTag(true);
+    setTagError(null);
+    try {
+      const res = await fetch(`/api/contacts/${contact.id}/tags`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || "Failed to add tag");
+      setContact((prev) =>
+        prev ? { ...prev, tags: [...prev.tags, data.data.tag] } : prev
+      );
+      setNewTag("");
+    } catch (err) {
+      console.error("Failed to add tag:", err);
+      setTagError("No se pudo agregar la etiqueta");
+    } finally {
+      setAddingTag(false);
     }
   }
 
@@ -194,6 +229,32 @@ export default function ContactDetailPage() {
               ))}
             </div>
           )}
+          <div className="mt-3 flex items-center gap-2">
+            <input
+              value={newTag}
+              onChange={(e) => {
+                setNewTag(e.target.value);
+                setTagError(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void addTag();
+                }
+              }}
+              placeholder="Nueva etiqueta (ej. Artista)"
+              className="w-full max-w-xs rounded-lg border border-border bg-surface px-3 py-1.5 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
+            />
+            <button
+              type="button"
+              onClick={() => void addTag()}
+              disabled={addingTag || !newTag.trim()}
+              className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:border-border-hover hover:text-foreground disabled:opacity-40"
+            >
+              {addingTag ? "Agregando…" : "+ Agregar"}
+            </button>
+          </div>
+          {tagError && <p className="mt-1 text-xs text-red-400">{tagError}</p>}
         </div>
       </div>
 

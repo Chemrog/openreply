@@ -86,8 +86,34 @@ model Workspace {
   operationalEvents OperationalEvent[]
   contacts          Contact[]
   tags              Tag[]
+  outboundWebhooks  OutboundWebhook[]
 
   @@index([ownerId])
+}
+
+/// A user-configured endpoint that OpenReply POSTs to when an event happens
+/// (currently just `contact.created`) — e.g. to sync new contacts into an
+/// external CRM. Delivery is best-effort: failures are recorded but not
+/// retried.
+model OutboundWebhook {
+  id          String  @id @default(cuid())
+  workspaceId String
+  url         String
+  /// HMAC-SHA256 signing secret, sent as `X-OpenReply-Signature: sha256=<hex>`
+  /// so the receiver can verify the payload came from OpenReply.
+  secret      String
+  event       String  @default("contact.created")
+  enabled     Boolean @default(true)
+
+  createdAt       DateTime  @default(now())
+  lastTriggeredAt DateTime?
+  lastStatus      Int?
+  lastError       String?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([workspaceId, event, enabled])
 }
 
 model WorkspaceMember {

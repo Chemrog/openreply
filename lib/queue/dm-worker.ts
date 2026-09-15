@@ -42,6 +42,7 @@ import {
   renderMessageWithTracking,
   renderMessageWithoutLink,
 } from "@/lib/tracking/message";
+import { triggerContactCreatedWebhooks } from "@/lib/integrations/outbound-webhooks";
 
 const BACKOFF_DELAYS = [5 * 60 * 1000, 15 * 60 * 1000, 45 * 60 * 1000];
 
@@ -241,6 +242,34 @@ async function upsertContact(
       lastInteractionAt: new Date(),
     },
   });
+
+  // Prisma sets createdAt and updatedAt to the same instant on insert, so
+  // this equality is a reliable "was this row just created?" check without
+  // restructuring the upsert into a separate find+create.
+  const wasCreated = contact.createdAt.getTime() === contact.updatedAt.getTime();
+  if (wasCreated) {
+    void triggerContactCreatedWebhooks(workspaceId, {
+      event: "contact.created",
+      workspaceId,
+      contact: {
+        id: contact.id,
+        igsId: contact.igsId,
+        username: contact.username,
+        name: contact.name,
+        profilePicUrl: contact.profilePicUrl,
+        followerCount: contact.followerCount,
+        isVerifiedUser: contact.isVerifiedUser,
+        isFollowingBusiness: contact.isFollowingBusiness,
+        isBusinessFollowingUser: contact.isBusinessFollowingUser,
+        tags: [],
+        createdAt: contact.createdAt.toISOString(),
+        lastInteractionAt: contact.lastInteractionAt?.toISOString() ?? null,
+      },
+      sentAt: new Date().toISOString(),
+    }).catch((error) => {
+      console.log("[DM Worker] contact.created webhook dispatch failed:", formatError(error));
+    });
+  }
 
   const needsSync =
     !contact.profileSyncedAt ||
