@@ -17,6 +17,8 @@ interface DmLog {
   commentText: string;
   status: string;
   errorMessage: string | null;
+  quickReplyPromptSentAt: string | null;
+  quickReplyPromptError: string | null;
   createdAt: string;
   automation: { name: string; keywords: string[] };
   instagramAccount: { username: string };
@@ -181,7 +183,17 @@ export default function LogsPage() {
                       <span className="text-muted">@{log.instagramAccount.username}</span>
                     </td>
                     <td className="px-4 py-4 sm:px-6">
-                      <StatusBadge status={log.status} />
+                      <div className="flex flex-col gap-1">
+                        <StatusBadge status={log.status} />
+                        {log.quickReplyPromptError && (
+                          <span
+                            title={log.quickReplyPromptError}
+                            className="inline-flex items-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-500"
+                          >
+                            QR failed
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-4 py-4 text-muted whitespace-nowrap sm:px-6">
                       {new Date(log.createdAt).toLocaleString("en-US", {

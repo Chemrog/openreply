@@ -394,6 +394,13 @@ model DmLog {
   publicReplySentAt DateTime?
   publicReplyError  String?
 
+  // The Quick Replies classification prompt is a second `/messages` call sent
+  // right after the reveal DM. It can silently fail (closed messaging window,
+  // template rejection) while the reveal itself succeeded, so its outcome is
+  // tracked on the same row instead of bubbling up as a job failure.
+  quickReplyPromptSentAt DateTime?
+  quickReplyPromptError  String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

@@ -354,36 +354,49 @@ async function sendQuickReplyOptionResponse(
  * open a ContactClassificationState so a later free-text reply can be retried.
  * Best-effort — failures here never fail the caller's job.
  */
+/**
+ * Outcome of the Quick Replies side-channel send, so the caller can persist it
+ * on the reveal's DmLog. `null` means no attempt was made (feature disabled or
+ * plan cap hit), which the log leaves untouched.
+ */
+type QuickRepliesOutcome = {
+  sentAt: Date | null;
+  error: string | null;
+};
+
 async function runQuickRepliesClassification(
   accessToken: string,
   automation: QuickRepliesAutomation,
   contactId: string,
   userId: string
-): Promise<void> {
+): Promise<QuickRepliesOutcome | null> {
   if (!automation.quickRepliesEnabled || automation.quickReplyOptions.length === 0) {
-    return;
+    return null;
   }
 
   if (automation.skipIfTagged) {
     const matched = await findTaggedOption(contactId, automation.quickReplyOptions);
     if (matched) {
       const usage = await reserveWorkspaceDMSend(automation.workspaceId);
-      if (!usage.allowed) return;
+      if (!usage.allowed) return null;
       try {
         await sendQuickReplyOptionResponse(accessToken, automation, userId, matched);
+        return { sentAt: new Date(), error: null };
       } catch (error) {
         await releaseWorkspaceDMReservation(automation.workspaceId, usage.periodStart);
+        const message = formatError(error);
         console.log(
           "[DM Worker] Failed to send tagged role message:",
-          formatError(error)
+          message,
+          { automationId: automation.id, userId, optionId: matched.id }
         );
+        return { sentAt: null, error: `tagged role message: ${message}` };
       }
-      return;
     }
   }
 
   const usage = await reserveWorkspaceDMSend(automation.workspaceId);
-  if (!usage.allowed) return;
+  if (!usage.allowed) return null;
   try {
     await sendQuickRepliesPrompt(
       accessToken,
@@ -398,12 +411,16 @@ async function runQuickRepliesClassification(
       create: { contactId, automationId: automation.id, retryCount: 0 },
       update: { retryCount: 0 },
     });
+    return { sentAt: new Date(), error: null };
   } catch (error) {
     await releaseWorkspaceDMReservation(automation.workspaceId, usage.periodStart);
+    const message = formatError(error);
     console.log(
       "[DM Worker] Failed to send quick replies prompt:",
-      formatError(error)
+      message,
+      { automationId: automation.id, userId, optionCount: automation.quickReplyOptions.length }
     );
+    return { sentAt: null, error: message };
   }
 }
 
@@ -889,12 +906,23 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           commenterName,
           accessToken
         );
-        await runQuickRepliesClassification(
+        const qrOutcome = await runQuickRepliesClassification(
           accessToken,
           automation,
           contact.id,
           commenterId
         );
+        if (qrOutcome) {
+          await prisma.dmLog.update({
+            where: {
+              automationId_commentId: { automationId: automation.id, commentId },
+            },
+            data: {
+              quickReplyPromptSentAt: qrOutcome.sentAt,
+              quickReplyPromptError: qrOutcome.error,
+            },
+          });
+        }
       }
     } catch (error) {
       await releaseWorkspaceDMReservation(
@@ -1412,6 +1440,7 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
       sendFollowPrompt = follows !== true;
     }
 
+    let quickReplyOutcome: QuickRepliesOutcome | null = null;
     const usage = await reserveWorkspaceDMSend(automation.workspaceId);
     if (!usage.allowed) {
       await prisma.dmLog.upsert({
@@ -1486,7 +1515,7 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
             commenterName,
             accessToken
           );
-          await runQuickRepliesClassification(
+          quickReplyOutcome = await runQuickRepliesClassification(
             accessToken,
             automation,
             contact.id,
@@ -1507,11 +1536,19 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
           commenterName,
           status: "SENT",
           dmSentAt: new Date(),
+          quickReplyPromptSentAt: quickReplyOutcome?.sentAt ?? null,
+          quickReplyPromptError: quickReplyOutcome?.error ?? null,
         },
         update: {
           status: "SENT",
           dmSentAt: new Date(),
           errorMessage: null,
+          ...(quickReplyOutcome
+            ? {
+                quickReplyPromptSentAt: quickReplyOutcome.sentAt,
+                quickReplyPromptError: quickReplyOutcome.error,
+              }
+            : {}),
         },
       });
     } catch (error) {
