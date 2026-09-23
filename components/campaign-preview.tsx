@@ -2,12 +2,20 @@
 
 /* eslint-disable @next/next/no-img-element */
 
+import { useState } from "react";
+
 /**
  * Campaign Preview
  *
  * Fixed-size iPhone 17 Pro mockup that simulates how a campaign appears on
  * Instagram across three screens (Post, Comments, DM). Every screen renders in
  * the identical frame so switching tabs never resizes the phone.
+ *
+ * The DM screen is an interactive step-by-step simulator, not a static
+ * transcript: buttons must be tapped to advance, mirroring exactly what
+ * lib/queue/dm-worker.ts does — quick replies only resolve on a button tap,
+ * free text just burns a retry (up to quickRepliesRetryCount) and then goes
+ * unanswered.
  */
 
 export type PreviewTab = "post" | "comments" | "dm" | "dmTrigger";
@@ -42,7 +50,10 @@ interface CampaignPreviewProps {
   followUpDelayMinutes?: number;
   quickRepliesEnabled?: boolean;
   quickRepliesMessage?: string;
-  quickReplyOptions?: { label: string }[];
+  quickRepliesRetryEnabled?: boolean;
+  quickRepliesRetryMessage?: string;
+  quickRepliesRetryCount?: number;
+  quickReplyOptions?: { label: string; responseMessage?: string }[];
 }
 
 const SAMPLE_USER = "username";
@@ -307,6 +318,61 @@ function CommentsScreen({
   );
 }
 
+/** A single chat bubble, either sent by the bot or echoed back as the test user. */
+function Bubble({
+  from,
+  avatarUrl,
+  children,
+}: {
+  from: "bot" | "user";
+  avatarUrl?: string | null;
+  children: React.ReactNode;
+}) {
+  if (from === "user") {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[80%] rounded-2xl rounded-br-md bg-accent px-3 py-2 text-sm">
+          {children}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-end gap-2">
+      <Avatar url={avatarUrl ?? null} size={24} />
+      <div className="max-w-[80%] overflow-hidden rounded-2xl rounded-bl-md bg-zinc-800">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** A tappable button rendered inside a bot bubble, styled like an IG quick reply/CTA. */
+function BubbleButton({
+  label,
+  onClick,
+  disabled,
+}: {
+  label: string;
+  onClick?: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={!onClick || disabled}
+      className={`mx-1.5 mb-1.5 block w-[calc(100%-12px)] rounded-xl px-4 py-1.5 text-center text-sm font-medium text-white transition-colors ${
+        onClick && !disabled
+          ? "cursor-pointer bg-zinc-700 hover:bg-zinc-600"
+          : "bg-zinc-700"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
 function DmScreen({
   username,
   avatarUrl,
@@ -328,6 +394,9 @@ function DmScreen({
   inboundMessage,
   quickRepliesEnabled = false,
   quickRepliesMessage = "",
+  quickRepliesRetryEnabled = false,
+  quickRepliesRetryMessage = "",
+  quickRepliesRetryCount = 3,
   quickReplyOptions = [],
 }: {
   username: string;
@@ -351,8 +420,58 @@ function DmScreen({
   inboundMessage?: string;
   quickRepliesEnabled?: boolean;
   quickRepliesMessage?: string;
-  quickReplyOptions?: { label: string }[];
+  quickRepliesRetryEnabled?: boolean;
+  quickRepliesRetryMessage?: string;
+  quickRepliesRetryCount?: number;
+  quickReplyOptions?: { label: string; responseMessage?: string }[];
 }) {
+  // Step gates the test user taps through, in the exact order the real
+  // automation sends them (see lib/queue/dm-worker.ts).
+  const [openingTapped, setOpeningTapped] = useState(false);
+  const [followTapped, setFollowTapped] = useState(false);
+  // null = still waiting on a tap; otherwise the index of the option chosen.
+  const [qrResolvedIndex, setQrResolvedIndex] = useState<number | null>(null);
+  // Each free-text "reply" the test user sends while a classification prompt
+  // is open. The worker only resends the prompt (as a retry) up to
+  // quickRepliesRetryCount times; beyond that it silently stops answering —
+  // so we track that outcome per attempt too.
+  const [qrAttempts, setQrAttempts] = useState<
+    { text: string; gotRetry: boolean }[]
+  >([]);
+  const [draft, setDraft] = useState("");
+
+  const afterOpening = !openingDmEnabled || openingTapped;
+  const afterFollow = afterOpening && (!requireFollow || followTapped);
+  const revealShown = afterFollow;
+  const qrDone = !quickRepliesEnabled || qrResolvedIndex !== null;
+  const threadDone = revealShown && qrDone;
+
+  const retriesLeft =
+    quickRepliesRetryEnabled &&
+    qrAttempts.filter((a) => a.gotRetry).length < quickRepliesRetryCount;
+
+  function sendFreeText() {
+    const text = draft.trim();
+    if (!text) return;
+    setQrAttempts((cur) => [...cur, { text, gotRetry: retriesLeft }]);
+    setDraft("");
+  }
+
+  const resolvedReveal = revealMessage.replace(/\{username\}/g, SAMPLE_USER);
+  const hasRevealToken = resolvedReveal.includes("{link}");
+  const showRevealCard = hasLink && hasRevealToken;
+  const revealBody = showRevealCard
+    ? resolvedReveal.replace(/\s*\{link\}\s*/g, " ").trim()
+    : resolvedReveal;
+
+  const chosenOption = qrResolvedIndex !== null ? quickReplyOptions[qrResolvedIndex] : null;
+  const chosenText = (chosenOption?.responseMessage ?? "").trim();
+  const chosenHasToken = chosenText.includes("{link}");
+  const chosenShowCard = hasLink && chosenHasToken;
+  const chosenBody = chosenShowCard
+    ? chosenText.replace(/\s*\{link\}\s*/g, " ").trim()
+    : chosenText;
+
   return (
     <div className="flex h-full flex-col text-white">
       <StatusBar />
@@ -366,140 +485,205 @@ function DmScreen({
         </span>
       </div>
 
-      <div className="flex-1 space-y-3 px-3 py-4">
+      <div className="flex-1 space-y-3 overflow-y-auto px-3 py-4">
         {inboundMessage !== undefined && (
-          <div className="flex justify-end">
-            <div className="max-w-[80%] rounded-2xl rounded-br-md bg-accent px-3 py-2 text-sm">
-              {inboundMessage || "their message"}
-            </div>
-          </div>
+          <Bubble from="user">{inboundMessage || "their message"}</Bubble>
         )}
+
         {openingDmEnabled && (
           <>
-            <div className="flex items-end gap-2">
-              <Avatar url={avatarUrl} size={24} />
-              <div className="max-w-[80%] overflow-hidden rounded-2xl rounded-bl-md bg-zinc-800">
-                <p className="whitespace-pre-wrap px-3 py-2 text-sm">{openingDmMessage || "Your opening message…"}</p>
-                <div className="mx-1.5 mb-1.5 rounded-xl bg-zinc-700 px-4 py-1.5 text-center text-sm font-medium text-white">
-                  {openingDmButtonLabel || "Button label"}
-                </div>
-              </div>
-            </div>
-            <div className="flex justify-end">
-              <div className="rounded-2xl rounded-br-md bg-accent px-3 py-2 text-sm">
-                {openingDmButtonLabel || "Button label"}
-              </div>
-            </div>
-          </>
-        )}
-        {requireFollow && (
-          <>
-            <div className="flex items-end gap-2">
-              <Avatar url={avatarUrl} size={24} />
-              <div className="max-w-[80%] overflow-hidden rounded-2xl rounded-bl-md bg-zinc-800">
-                <p className="whitespace-pre-wrap px-3 py-2 text-sm">
-                  {followPromptMessage ||
-                    "quick favor before i send your link. i don't make any money from this, it's free. if you want to support me, just don't unfollow after, and star the repo on github if it helps you. tap the button once you're following and i'll send it over"}
-                </p>
-                <div className="mx-1.5 mb-1.5 rounded-xl bg-zinc-700 px-4 py-1.5 text-center text-sm font-medium text-white">
-                  {followPromptButtonLabel || "i'm following"}
-                </div>
-              </div>
-            </div>
-            <div className="flex justify-end">
-              <div className="rounded-2xl rounded-br-md bg-accent px-3 py-2 text-sm">
-                {followPromptButtonLabel || "i'm following"}
-              </div>
-            </div>
-          </>
-        )}
-        {(() => {
-          const resolved = revealMessage.replace(/\{username\}/g, SAMPLE_USER);
-          const hasToken = resolved.includes("{link}");
-          const showCard = hasLink && hasToken;
-          const bodyText = showCard
-            ? resolved.replace(/\s*\{link\}\s*/g, " ").trim()
-            : resolved;
-          return (
-            <div className="flex items-end gap-2">
-              <Avatar url={avatarUrl} size={24} />
-              <div className="max-w-[80%] overflow-hidden rounded-2xl rounded-bl-md bg-zinc-800">
-                {(!showCard || bodyText) && (
-                  <p className="whitespace-pre-wrap px-3 py-2 text-sm">
-                    {!revealMessage
-                      ? "Write a message"
-                      : showCard
-                        ? bodyText
-                        : renderMessage(revealMessage, hasLink, linkUrl)}
-                  </p>
-                )}
-                {showCard && (
-                  <>
-                    <div className="mx-1.5 mb-1.5 rounded-xl bg-zinc-700 px-4 py-1.5 text-center text-sm font-medium text-white">
-                      {linkButtonLabel || "Open link"}
-                    </div>
-                    {hasSecondLink && (
-                      <div className="mx-1.5 mb-1.5 rounded-xl bg-zinc-700 px-4 py-1.5 text-center text-sm font-medium text-white">
-                        {secondLinkButtonLabel || "Open link"}
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
-          );
-        })()}
-        {quickRepliesEnabled && (
-          <>
-            <div className="flex items-end gap-2">
-              <Avatar url={avatarUrl} size={24} />
-              <div className="max-w-[80%] rounded-2xl rounded-bl-md bg-zinc-800 px-3 py-2">
-                <p className="whitespace-pre-wrap text-sm">
-                  {quickRepliesMessage.trim() || "¿Cuál de estas opciones te describe mejor?"}
-                </p>
-              </div>
-            </div>
-            {quickReplyOptions.length > 0 && (
-              <div className="flex flex-wrap justify-end gap-1.5 pl-8">
-                {quickReplyOptions.map((option, i) => (
-                  <span
-                    key={i}
-                    className="rounded-full border border-accent px-3 py-1 text-xs font-semibold text-accent"
-                  >
-                    {option.label.trim() || `Opción ${i + 1}`}
-                  </span>
-                ))}
-              </div>
+            <Bubble from="bot" avatarUrl={avatarUrl}>
+              <p className="whitespace-pre-wrap px-3 py-2 text-sm">
+                {openingDmMessage || "Your opening message…"}
+              </p>
+              <BubbleButton
+                label={openingDmButtonLabel || "Button label"}
+                onClick={!openingTapped ? () => setOpeningTapped(true) : undefined}
+              />
+            </Bubble>
+            {openingTapped && (
+              <Bubble from="user">{openingDmButtonLabel || "Button label"}</Bubble>
             )}
           </>
         )}
-        {followUpEnabled && (
+
+        {afterOpening && requireFollow && (
+          <>
+            <Bubble from="bot" avatarUrl={avatarUrl}>
+              <p className="whitespace-pre-wrap px-3 py-2 text-sm">
+                {followPromptMessage ||
+                  "quick favor before i send your link. i don't make any money from this, it's free. if you want to support me, just don't unfollow after, and star the repo on github if it helps you. tap the button once you're following and i'll send it over"}
+              </p>
+              <BubbleButton
+                label={followPromptButtonLabel || "i'm following"}
+                onClick={!followTapped ? () => setFollowTapped(true) : undefined}
+              />
+            </Bubble>
+            {followTapped && (
+              <Bubble from="user">{followPromptButtonLabel || "i'm following"}</Bubble>
+            )}
+          </>
+        )}
+
+        {revealShown && (
+          <Bubble from="bot" avatarUrl={avatarUrl}>
+            {(!showRevealCard || revealBody) && (
+              <p className="whitespace-pre-wrap px-3 py-2 text-sm">
+                {!revealMessage
+                  ? "Write a message"
+                  : showRevealCard
+                    ? revealBody
+                    : renderMessage(revealMessage, hasLink, linkUrl)}
+              </p>
+            )}
+            {showRevealCard && (
+              <>
+                <BubbleButton label={linkButtonLabel || "Open link"} />
+                {hasSecondLink && (
+                  <BubbleButton label={secondLinkButtonLabel || "Open link"} />
+                )}
+              </>
+            )}
+          </Bubble>
+        )}
+
+        {revealShown && quickRepliesEnabled && (
+          <>
+            {/* Initial classify prompt, then one retry bubble per free-text
+                attempt that still had a retry left. */}
+            <Bubble from="bot" avatarUrl={avatarUrl}>
+              <p className="whitespace-pre-wrap px-3 py-2 text-sm">
+                {quickRepliesMessage.trim() ||
+                  "¿Cuál de estas opciones te describe mejor?"}
+              </p>
+            </Bubble>
+            {qrResolvedIndex === null && quickReplyOptions.length > 0 && (
+              <div className="flex flex-wrap justify-end gap-1.5 pl-8">
+                {quickReplyOptions.map((option, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => setQrResolvedIndex(i)}
+                    className="cursor-pointer rounded-full border border-accent px-3 py-1 text-xs font-semibold text-accent transition-colors hover:bg-accent/10"
+                  >
+                    {option.label.trim() || `Opción ${i + 1}`}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {qrAttempts.map((attempt, i) => (
+              <div key={i} className="space-y-3">
+                <Bubble from="user">{attempt.text}</Bubble>
+                {attempt.gotRetry ? (
+                  <>
+                    <Bubble from="bot" avatarUrl={avatarUrl}>
+                      <p className="whitespace-pre-wrap px-3 py-2 text-sm">
+                        {(quickRepliesRetryMessage.trim() ||
+                          quickRepliesMessage.trim() ||
+                          "Por favor, toca una de las opciones para poder ayudarte.")}
+                      </p>
+                    </Bubble>
+                    {i === qrAttempts.length - 1 &&
+                      qrResolvedIndex === null &&
+                      quickReplyOptions.length > 0 && (
+                        <div className="flex flex-wrap justify-end gap-1.5 pl-8">
+                          {quickReplyOptions.map((option, j) => (
+                            <button
+                              key={j}
+                              type="button"
+                              onClick={() => setQrResolvedIndex(j)}
+                              className="cursor-pointer rounded-full border border-accent px-3 py-1 text-xs font-semibold text-accent transition-colors hover:bg-accent/10"
+                            >
+                              {option.label.trim() || `Opción ${j + 1}`}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                  </>
+                ) : (
+                  i === qrAttempts.length - 1 && (
+                    <p className="text-right text-[11px] text-zinc-500">
+                      {quickRepliesRetryEnabled
+                        ? `Sin respuesta — ya se usaron los ${quickRepliesRetryCount} reintentos.`
+                        : `Sin respuesta — "Reintentar si no elige opción" está desactivado.`}
+                    </p>
+                  )
+                )}
+              </div>
+            ))}
+
+            {qrResolvedIndex !== null && (
+              <>
+                <Bubble from="user">
+                  {quickReplyOptions[qrResolvedIndex]?.label.trim() ||
+                    `Opción ${qrResolvedIndex + 1}`}
+                </Bubble>
+                <Bubble from="bot" avatarUrl={avatarUrl}>
+                  {(!chosenShowCard || chosenBody) && (
+                    <p className="whitespace-pre-wrap px-3 py-2 text-sm">
+                      {!chosenText
+                        ? "Respuesta de la opción…"
+                        : chosenShowCard
+                          ? chosenBody
+                          : renderMessage(chosenText, hasLink, linkUrl)}
+                    </p>
+                  )}
+                  {chosenShowCard && <BubbleButton label={linkButtonLabel || "Open link"} />}
+                </Bubble>
+              </>
+            )}
+          </>
+        )}
+
+        {threadDone && followUpEnabled && (
           <>
             {followUpDelayMinutes > 0 && (
               <p className="py-1 text-center text-[11px] text-zinc-500">
                 {followUpDelayMinutes} min later
               </p>
             )}
-            <div className="flex items-end gap-2">
-              <Avatar url={avatarUrl} size={24} />
-              <div className="max-w-[80%] rounded-2xl rounded-bl-md bg-zinc-800 px-3 py-2">
-                <p className="whitespace-pre-wrap text-sm">
-                  {followUpMessage.trim()
-                    ? followUpMessage.replace(/\{username\}/g, SAMPLE_USER)
-                    : "Btw just wanted to say thanks for following me, I appreciate the support 🙌"}
-                </p>
-              </div>
-            </div>
+            <Bubble from="bot" avatarUrl={avatarUrl}>
+              <p className="whitespace-pre-wrap px-3 py-2 text-sm">
+                {followUpMessage.trim()
+                  ? followUpMessage.replace(/\{username\}/g, SAMPLE_USER)
+                  : "Btw just wanted to say thanks for following me, I appreciate the support 🙌"}
+              </p>
+            </Bubble>
           </>
         )}
       </div>
 
-      <div className="flex items-center gap-2 px-3 py-3">
-        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-accent text-white">
-          {Ico.camera("h-4 w-4")}
-        </span>
-        <div className="flex-1 rounded-full bg-zinc-800 px-3 py-2 text-xs text-zinc-500">Message…</div>
-      </div>
+      {revealShown && quickRepliesEnabled && qrResolvedIndex === null ? (
+        <div className="flex items-center gap-2 px-3 py-3">
+          <input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") sendFreeText();
+            }}
+            placeholder="Escribe algo (sin tocar un botón)…"
+            className="flex-1 rounded-full bg-zinc-800 px-3 py-2 text-xs text-white placeholder:text-zinc-500 focus:outline-none"
+          />
+          <button
+            type="button"
+            onClick={sendFreeText}
+            disabled={!draft.trim()}
+            className="shrink-0 rounded-full bg-accent px-3 py-2 text-xs font-medium text-white disabled:opacity-40"
+          >
+            Enviar
+          </button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 px-3 py-3">
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-accent text-white">
+            {Ico.camera("h-4 w-4")}
+          </span>
+          <div className="flex-1 rounded-full bg-zinc-800 px-3 py-2 text-xs text-zinc-500">
+            Message…
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -521,6 +705,20 @@ export default function CampaignPreview(props: CampaignPreviewProps) {
   // to the comment thread rather than rendering an empty phone.
   const activeTab: PreviewTab =
     tab === "dmTrigger" && !props.dmTriggerEnabled ? "dm" : tab;
+
+  // The DM screens are stateful step-by-step simulators (tap to advance).
+  // Remounting them (via `key`) resets that state: automatically whenever the
+  // shape of the flow changes underneath the user, or manually via "Reiniciar".
+  const [resetTick, setResetTick] = useState(0);
+  const dmSimKey = [
+    resetTick,
+    props.openingDmEnabled,
+    props.requireFollow,
+    props.quickRepliesEnabled,
+    props.quickRepliesRetryEnabled,
+    props.quickRepliesRetryCount,
+    props.quickReplyOptions?.length ?? 0,
+  ].join("-");
 
   return (
     <div className="flex flex-col items-center gap-5">
@@ -544,6 +742,7 @@ export default function CampaignPreview(props: CampaignPreviewProps) {
         )}
         {activeTab === "dm" && (
           <DmScreen
+            key={dmSimKey}
             username={props.username}
             avatarUrl={props.avatarUrl}
             openingDmEnabled={props.openingDmEnabled}
@@ -563,11 +762,15 @@ export default function CampaignPreview(props: CampaignPreviewProps) {
             linkUrl={props.linkUrl}
             quickRepliesEnabled={props.quickRepliesEnabled}
             quickRepliesMessage={props.quickRepliesMessage}
+            quickRepliesRetryEnabled={props.quickRepliesRetryEnabled}
+            quickRepliesRetryMessage={props.quickRepliesRetryMessage}
+            quickRepliesRetryCount={props.quickRepliesRetryCount}
             quickReplyOptions={props.quickReplyOptions}
           />
         )}
         {activeTab === "dmTrigger" && (
           <DmScreen
+            key={`trigger-${dmSimKey}`}
             username={props.username}
             avatarUrl={props.avatarUrl}
             // The user opened the conversation, so no opening DM is sent.
@@ -587,6 +790,12 @@ export default function CampaignPreview(props: CampaignPreviewProps) {
             followUpDelayMinutes={props.followUpDelayMinutes}
             linkUrl={props.linkUrl}
             inboundMessage={props.sampleComment}
+            quickRepliesEnabled={props.quickRepliesEnabled}
+            quickRepliesMessage={props.quickRepliesMessage}
+            quickRepliesRetryEnabled={props.quickRepliesRetryEnabled}
+            quickRepliesRetryMessage={props.quickRepliesRetryMessage}
+            quickRepliesRetryCount={props.quickRepliesRetryCount}
+            quickReplyOptions={props.quickReplyOptions}
           />
         )}
       </Phone>
@@ -607,6 +816,19 @@ export default function CampaignPreview(props: CampaignPreviewProps) {
           </button>
         ))}
       </div>
+
+      {(activeTab === "dm" || activeTab === "dmTrigger") && (
+        <div className="flex items-center gap-2 text-xs text-muted">
+          <span>Toca los botones del chat para simular la conversación real.</span>
+          <button
+            type="button"
+            onClick={() => setResetTick((n) => n + 1)}
+            className="shrink-0 rounded-full border border-muted/30 px-2.5 py-1 font-medium hover:bg-surface"
+          >
+            Reiniciar
+          </button>
+        </div>
+      )}
     </div>
   );
 }
