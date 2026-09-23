@@ -41,6 +41,7 @@ export async function GET(
       where: { workspaceId, commenterId: contact.igsId },
       orderBy: { createdAt: "desc" },
       take: 50,
+      include: { automation: { select: { name: true } } },
     });
   } catch {
     dmLogs = [];
