@@ -330,12 +330,20 @@ async function sendQuickReplyOptionResponse(
   userId: string,
   option: QuickRepliesAutomation["quickReplyOptions"][number]
 ): Promise<void> {
+  // The URL rides on a button, so the `{link}` placeholder in the body would
+  // render as literal "{link}" text. Strip it (and any `{username}`) via the
+  // same helper the reveal path uses. When there is no URL, still strip it —
+  // there is nothing to substitute.
+  const bodyText = renderMessageWithoutLink({
+    message: option.responseMessage,
+    commenterName: null,
+  });
   if (option.responseLinkUrl) {
     await sendDirectMessageWithLinkButton(
       accessToken,
       automation.instagramAccount.instagramId,
       userId,
-      option.responseMessage,
+      bodyText || " ",
       [{ title: option.responseLinkLabel || "Ver más", url: option.responseLinkUrl }]
     );
   } else {
@@ -343,7 +351,7 @@ async function sendQuickReplyOptionResponse(
       accessToken,
       automation.instagramAccount.instagramId,
       userId,
-      option.responseMessage
+      bodyText
     );
   }
 }
