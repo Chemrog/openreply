@@ -213,6 +213,45 @@ export async function sendPrivateReplyWithButton(
 }
 
 /**
+ * Send a private reply to a comment WITH Quick Reply chips attached. Comments
+ * only get a single private_reply, and follow-up `/messages` calls to a user
+ * who has not yet DM'd the account are rejected as "outside allowed window"
+ * (sub=2534022). So when Quick Replies classification is enabled, the reveal
+ * text and the chip prompt have to ride in the same private_reply.
+ */
+export async function sendPrivateReplyWithQuickReplies(
+  accessToken: string,
+  instagramAccountId: string,
+  commentId: string,
+  text: string,
+  quickReplies: QuickReply[]
+): Promise<{ recipient_id: string; message_id: string }> {
+  const response = await fetch(
+    `${instagramGraphBase()}/${instagramAccountId}/messages`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({
+        recipient: { comment_id: commentId },
+        message: {
+          text: text.slice(0, 1000),
+          quick_replies: quickReplies.slice(0, 13).map((qr) => ({
+            content_type: "text",
+            title: qr.title.slice(0, 20),
+            payload: qr.payload,
+          })),
+        },
+      }),
+    }
+  );
+
+  return handleResponse(response);
+}
+
+/**
  * Send a direct message (to a user's IGSID) as a button template with a single
  * postback button. Used to re-prompt a user during follow-gating, so tapping
  * the button fires another `messaging_postbacks` webhook carrying `payload`.

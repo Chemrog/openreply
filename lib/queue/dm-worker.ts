@@ -28,6 +28,7 @@ import {
   sendPrivateReply,
   sendPrivateReplyWithButton,
   sendPrivateReplyWithLinkButton,
+  sendPrivateReplyWithQuickReplies,
 } from "@/lib/meta/client";
 import { decryptToken } from "@/lib/meta/oauth";
 import { matchKeywords } from "@/lib/utils/keyword-matcher";
@@ -785,6 +786,10 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
       sendFollowPrompt = alreadyFollows !== true;
     }
 
+    // Set inside the try block by the combined reveal+chips branch so its
+    // outcome (or a post-hoc /messages fallback) can be persisted on the log.
+    let quickReplyPromptOutcome: QuickRepliesOutcome | null = null;
+
     try {
       if (useOpeningDm) {
         const openingText = renderMessageWithTracking({
@@ -817,6 +822,92 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           automation.followPromptButtonLabel || "i'm following",
           `followcheck:${automation.id}`
         );
+      } else if (
+        automation.quickRepliesEnabled &&
+        automation.quickReplyOptions.length > 0
+      ) {
+        // Quick Replies + comment trigger: chips have to ride in the SAME
+        // private_reply as the reveal, because a follow-up /messages call to a
+        // user who hasn't DM'd yet is rejected as "outside allowed window"
+        // (sub=2534022). Meta only allows one private_reply per comment, so we
+        // combine the reveal text and the classification prompt into one
+        // message with the chips attached.
+        const contact = await upsertContact(
+          automation.workspaceId,
+          automation.instagramAccountId,
+          commenterId,
+          commenterName,
+          accessToken
+        );
+        const tagged = automation.skipIfTagged
+          ? await findTaggedOption(contact.id, automation.quickReplyOptions)
+          : null;
+
+        if (tagged) {
+          // Contact already carries a role tag: skip the prompt and deliver
+          // that option's response directly as the private_reply.
+          const taggedText = renderMessageWithoutLink({
+            message: tagged.responseMessage,
+            commenterName,
+          });
+          if (tagged.responseLinkUrl) {
+            await sendPrivateReplyWithLinkButton(
+              accessToken,
+              automation.instagramAccount.instagramId,
+              commentId,
+              taggedText || " ",
+              [
+                {
+                  title: (tagged.responseLinkLabel || "Ver más").slice(0, 20),
+                  url: tagged.responseLinkUrl,
+                },
+              ]
+            );
+          } else {
+            await sendPrivateReply(
+              accessToken,
+              automation.instagramAccount.instagramId,
+              commentId,
+              taggedText
+            );
+          }
+          quickReplyPromptOutcome = { sentAt: new Date(), error: null };
+        } else {
+          const revealText = renderMessageWithoutLink({
+            message: automation.dmMessage,
+            commenterName,
+          });
+          const promptText =
+            automation.quickRepliesMessage || "¿Con cuál te identificas más?";
+          const combined = [revealText, promptText]
+            .filter((s) => s && s.trim())
+            .join("\n\n");
+          await sendPrivateReplyWithQuickReplies(
+            accessToken,
+            automation.instagramAccount.instagramId,
+            commentId,
+            combined,
+            automation.quickReplyOptions.map((o) => ({
+              title: o.label,
+              payload: o.payload,
+            }))
+          );
+          await prisma.contactClassificationState.upsert({
+            where: {
+              contactId_automationId: {
+                contactId: contact.id,
+                automationId: automation.id,
+              },
+            },
+            create: {
+              contactId: contact.id,
+              automationId: automation.id,
+              retryCount: 0,
+            },
+            update: { retryCount: 0 },
+          });
+          quickReplyPromptOutcome = { sentAt: new Date(), error: null };
+        }
       } else if (automation.trackedLinks.length > 0) {
         // Try button template first; if Meta rejects it, fall back to inline links.
         const bodyText =
@@ -895,34 +986,22 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
         },
       });
 
-      // Quick Replies classification only applies once the reveal link has
-      // actually gone out — not when this pass only sent an opening DM or a
-      // follow-gate prompt, since the real reveal is still pending a tap.
-      if (!useOpeningDm && !sendFollowPrompt && automation.quickRepliesEnabled) {
-        const contact = await upsertContact(
-          automation.workspaceId,
-          automation.instagramAccountId,
-          commenterId,
-          commenterName,
-          accessToken
-        );
-        const qrOutcome = await runQuickRepliesClassification(
-          accessToken,
-          automation,
-          contact.id,
-          commenterId
-        );
-        if (qrOutcome) {
-          await prisma.dmLog.update({
-            where: {
-              automationId_commentId: { automationId: automation.id, commentId },
-            },
-            data: {
-              quickReplyPromptSentAt: qrOutcome.sentAt,
-              quickReplyPromptError: qrOutcome.error,
-            },
-          });
-        }
+      // Quick Replies classification: when the reveal itself carried the chips
+      // (comment trigger with no opening DM / follow gate), the inline branch
+      // above already sent them, and `quickReplyPromptOutcome` records that.
+      // Otherwise (opening-DM or follow-gate paths, where the real reveal is
+      // still pending a tap) the classification runs as a separate follow-up
+      // send in `processPostback`, not here — so nothing to do at this stage.
+      if (quickReplyPromptOutcome) {
+        await prisma.dmLog.update({
+          where: {
+            automationId_commentId: { automationId: automation.id, commentId },
+          },
+          data: {
+            quickReplyPromptSentAt: quickReplyPromptOutcome.sentAt,
+            quickReplyPromptError: quickReplyPromptOutcome.error,
+          },
+        });
       }
     } catch (error) {
       await releaseWorkspaceDMReservation(
