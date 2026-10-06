@@ -87,6 +87,14 @@ export const FOLLOWUP_JOB_NAME = "process-followup";
 export const MESSAGE_JOB_NAME = "process-message";
 export const QUICK_REPLY_JOB_NAME = "process-quick-reply";
 
+/**
+ * Lifetime cap on DM send attempts for one comment, across every job that
+ * touches it (webhook, retries, polling sweeps). Meta sometimes delivers a DM
+ * and still answers with an error, so an uncapped retry loop re-sends the same
+ * message to the same person every sweep.
+ */
+export const MAX_DM_SEND_ATTEMPTS = 3;
+
 let dmQueue: Queue<DmQueueJob> | null = null;
 
 export function getDMQueue(): Queue<DmQueueJob> {
@@ -102,7 +110,7 @@ export function getDMQueue(): Queue<DmQueueJob> {
         // failure (e.g. an Instagram rate-limit window) has passed. Failure
         // detail is still preserved in DmLog.
         removeOnFail: { age: 300, count: 2000 },
-        attempts: 3,
+        attempts: MAX_DM_SEND_ATTEMPTS,
         backoff: {
           type: "custom",
         },

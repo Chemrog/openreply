@@ -1,6 +1,7 @@
 import { Worker, type Job } from "bullmq";
 import {
   getDMQueue,
+  MAX_DM_SEND_ATTEMPTS,
   getRedisConnection,
   MESSAGE_JOB_NAME,
   POSTBACK_JOB_NAME,
@@ -511,6 +512,9 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     if (alreadyDmd && (alreadyPublicReplied || !automation.publicReplyEnabled)) {
       continue;
     }
+    if (needsDm && (existingLog?.attempts ?? 0) >= MAX_DM_SEND_ATTEMPTS) {
+      continue;
+    }
 
     if (!automation.instagramAccount.accessToken) {
       await prisma.dmLog.upsert({
@@ -586,7 +590,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           commentId,
           matchedKeyword: matchResult.matchedKeyword,
           status: "PENDING",
-          attempts: job.attemptsMade + 1,
+          attempts: 1,
         },
       });
     } else if (needsDm) {
@@ -596,7 +600,9 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
         },
         data: {
           status: "PENDING",
-          attempts: job.attemptsMade + 1,
+          // Cumulative across jobs, so MAX_DM_SEND_ATTEMPTS caps the comment's
+          // lifetime and not just one job's BullMQ retries.
+          attempts: { increment: 1 },
           matchedKeyword: matchResult.matchedKeyword,
           errorMessage: null,
         },
@@ -715,7 +721,6 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
         },
         data: {
           status: "FAILED",
-          attempts: job.attemptsMade + 1,
           errorMessage: formatError(error),
         },
       });
@@ -1026,7 +1031,6 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
         },
         data: {
           status: "FAILED",
-          attempts: job.attemptsMade + 1,
           errorMessage: formatError(error),
         },
       });

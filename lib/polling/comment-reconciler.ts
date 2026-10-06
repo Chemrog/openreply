@@ -26,7 +26,7 @@
  */
 
 import { prisma } from "@/lib/db/client";
-import { getDMQueue } from "@/lib/queue/client";
+import { getDMQueue, MAX_DM_SEND_ATTEMPTS } from "@/lib/queue/client";
 import {
   getRecentMediaComments,
   getUserMedia,
@@ -207,13 +207,19 @@ async function sweepCampaign(
     // enough — the reply still has to land); otherwise a SENT DM is enough. This
     // is what lets a comment whose DM sent but whose public reply failed come
     // back and retry the reply.
+    // A comment that already used up its DM attempts also counts as handled:
+    // Meta can deliver a DM and still return an error, so re-enqueueing it
+    // would re-send the same message every sweep.
     const handled = await prisma.dmLog.findMany({
       where: {
         automationId: automation.id,
         commentId: { in: needsAction.map((c) => c.id) },
-        ...(automation.publicReplyEnabled
-          ? { publicReplySentAt: { not: null } }
-          : { status: "SENT" }),
+        OR: [
+          automation.publicReplyEnabled
+            ? { publicReplySentAt: { not: null } }
+            : { status: "SENT" },
+          { status: "FAILED", attempts: { gte: MAX_DM_SEND_ATTEMPTS } },
+        ],
       },
       select: { commentId: true },
     });
