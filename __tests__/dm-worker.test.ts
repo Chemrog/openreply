@@ -15,6 +15,7 @@ const {
   mockQueueAdd,
   mockReserveWorkspaceDMSend,
   mockReleaseWorkspaceDMReservation,
+  mockRedis,
 } = vi.hoisted(() => ({
   mockPrisma: {
     automation: {
@@ -30,6 +31,16 @@ const {
     },
     instagramAccount: {
       findUnique: vi.fn(),
+    },
+    contact: {
+      findUnique: vi.fn(),
+      upsert: vi.fn(),
+    },
+    contactClassificationState: {
+      findMany: vi.fn(),
+      delete: vi.fn(),
+      deleteMany: vi.fn(),
+      update: vi.fn(),
     },
     operationalEvent: {
       create: vi.fn(),
@@ -48,6 +59,10 @@ const {
   mockQueueAdd: vi.fn(),
   mockReserveWorkspaceDMSend: vi.fn(),
   mockReleaseWorkspaceDMReservation: vi.fn(),
+  mockRedis: {
+    exists: vi.fn(),
+    set: vi.fn(),
+  },
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -63,6 +78,7 @@ vi.mock("@/lib/meta/client", () => ({
   sendDirectMessage: mockSendDirectMessage,
   sendDirectMessageWithLinkButton: mockSendDirectMessageWithLinkButton,
   sendCommentReply: vi.fn(),
+  setSentMessageRecorder: vi.fn(),
   MetaApiError: class MetaApiError extends Error {
     code: number;
     constructor(
@@ -109,10 +125,15 @@ vi.mock("@/lib/queue/client", () => ({
   getDMQueue: () => ({
     add: mockQueueAdd,
   }),
-  getRedisConnection: vi.fn(),
+  getRedisConnection: () => mockRedis,
+  sentMessageKey: (messageId: string) => `sent:${messageId}`,
+  SENT_MESSAGE_TTL_SECONDS: 86400,
+  ECHO_JOB_NAME: "process-echo",
   POSTBACK_JOB_NAME: "process-postback",
   FOLLOWUP_JOB_NAME: "process-followup",
   MESSAGE_JOB_NAME: "process-message",
+  QUICK_REPLY_JOB_NAME: "process-quick-reply",
+  MAX_DM_SEND_ATTEMPTS: 3,
 }));
 
 vi.mock("bullmq", () => {
@@ -328,6 +349,7 @@ describe("DM Worker — Full Pipeline", () => {
           },
           orderBy: { createdAt: "asc" },
         },
+        quickReplyOptions: { orderBy: { order: "asc" } },
       },
       orderBy: { createdAt: "asc" },
     });
@@ -1114,5 +1136,97 @@ describe("DM Worker — DM keyword trigger", () => {
         create: expect.objectContaining({ status: "FAILED" }),
       })
     );
+  });
+});
+
+describe("DM Worker — Quick Replies retry cutoffs", () => {
+  const quickRepliesAutomation = {
+    ...mockAutomation,
+    isActive: true,
+    quickRepliesEnabled: true,
+    quickRepliesRetryEnabled: true,
+    quickRepliesRetryCount: 3,
+    quickRepliesRetryMessage: "Elige una opción",
+    quickRepliesMessage: "¿Con cuál te identificas más?",
+    quickReplyOptions: [],
+  };
+
+  function createMockEchoJob() {
+    return {
+      name: "process-echo",
+      data: {
+        instagramAccountId: "ig_456",
+        messageId: "mid_echo",
+        recipientId: "commenter_999",
+      },
+      id: "echo_job_001",
+      attemptsMade: 0,
+    };
+  }
+
+  beforeEach(() => {
+    mockPrisma.instagramAccount.findUnique.mockResolvedValue({
+      id: "ig_account_row_1",
+      workspaceId: "workspace_123",
+      accessToken: "encrypted_token_abc",
+    });
+    mockPrisma.contact.findUnique.mockResolvedValue({ id: "contact_1" });
+    mockPrisma.contact.upsert.mockRejectedValue(new Error("not under test"));
+    mockPrisma.contactClassificationState.deleteMany.mockResolvedValue({ count: 1 });
+    mockPrisma.contactClassificationState.delete.mockResolvedValue({});
+  });
+
+  it("stops retry prompts when the owner replies by hand", async () => {
+    mockRedis.exists.mockResolvedValue(0);
+
+    const processor = getProcessor();
+    await processor(createMockEchoJob());
+
+    expect(mockPrisma.contactClassificationState.deleteMany).toHaveBeenCalledWith({
+      where: {
+        contactId: "contact_1",
+        automation: { instagramAccountId: "ig_account_row_1" },
+      },
+    });
+  });
+
+  it("ignores echoes of messages the worker sent", async () => {
+    mockRedis.exists.mockResolvedValue(1);
+
+    const processor = getProcessor();
+    await processor(createMockEchoJob());
+
+    expect(mockPrisma.contactClassificationState.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("does not re-send the prompt more than 24h after it went out", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([]);
+    mockPrisma.contactClassificationState.findMany.mockResolvedValue([
+      {
+        id: "state_1",
+        retryCount: 0,
+        createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
+        automation: quickRepliesAutomation,
+      },
+    ]);
+
+    const processor = getProcessor();
+    await processor({
+      name: "process-message",
+      data: {
+        instagramAccountId: "ig_456",
+        messageId: "mid_hola",
+        messageText: "hola, ¿cómo estás?",
+        senderId: "commenter_999",
+      },
+      id: "message_job_002",
+      attemptsMade: 0,
+    });
+
+    expect(mockPrisma.contactClassificationState.delete).toHaveBeenCalledWith({
+      where: { id: "state_1" },
+    });
+    expect(mockPrisma.contactClassificationState.update).not.toHaveBeenCalled();
+    expect(mockReserveWorkspaceDMSend).not.toHaveBeenCalled();
   });
 });

@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db/client";
 import { getDMQueue } from "@/lib/queue/client";
 import {
   parseCommentEvents,
+  parseEchoEvents,
   parseMessageEvents,
   parsePostbackEvents,
   parseQuickReplyEvents,
@@ -10,6 +11,8 @@ import {
   verifyWebhookSignature,
 } from "@/lib/meta/webhook";
 import {
+  ECHO_CHECK_DELAY_MS,
+  ECHO_JOB_NAME,
   MESSAGE_JOB_NAME,
   POSTBACK_JOB_NAME,
   QUICK_REPLY_JOB_NAME,
@@ -215,6 +218,29 @@ export async function POST(request: NextRequest) {
           data: { workspaceId: account.workspaceId },
         });
       }
+    }
+
+    // Messages the account sent. One the worker did not send means the owner
+    // has stepped into the conversation, so automated follow-ups stop.
+    const echoEvents = parseEchoEvents(
+      payload as Parameters<typeof parseEchoEvents>[0]
+    );
+
+    for (const event of echoEvents) {
+      await queue.add(
+        ECHO_JOB_NAME,
+        {
+          instagramAccountId: event.instagramAccountId,
+          messageId: event.messageId,
+          recipientId: event.recipientId,
+        },
+        {
+          delay: ECHO_CHECK_DELAY_MS,
+          jobId: `echo_${event.instagramAccountId}_${Buffer.from(
+            event.messageId
+          ).toString("base64url")}`,
+        }
+      );
     }
 
     // If a user reads the opening DM and never taps the button, deliver the

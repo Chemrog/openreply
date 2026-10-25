@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   verifyWebhookSignature,
   parseCommentEvents,
+  parseEchoEvents,
   parseMessageEvents,
   parseReadEvents,
 } from "../lib/meta/webhook";
@@ -513,5 +514,49 @@ describe("parseReadEvents", () => {
     };
 
     expect(parseReadEvents(payload)).toHaveLength(0);
+  });
+});
+
+describe("parseEchoEvents", () => {
+  function messagingPayload(messaging: unknown[]) {
+    return {
+      object: "instagram",
+      entry: [{ id: "ig_456", time: 1234567890, messaging }],
+    } as Parameters<typeof parseEchoEvents>[0];
+  }
+
+  it("should parse an echo of a message the account sent", () => {
+    const payload = messagingPayload([
+      {
+        sender: { id: "ig_456" },
+        recipient: { id: "user_999" },
+        message: { mid: "mid_echo", text: "hola, ¿cómo estás?", is_echo: true },
+      },
+    ]);
+
+    expect(parseEchoEvents(payload)).toEqual([
+      {
+        instagramAccountId: "ig_456",
+        messageId: "mid_echo",
+        recipientId: "user_999",
+      },
+    ]);
+  });
+
+  it("should ignore inbound messages and deleted echoes", () => {
+    const payload = messagingPayload([
+      {
+        sender: { id: "user_999" },
+        recipient: { id: "ig_456" },
+        message: { mid: "mid_in", text: "hola" },
+      },
+      {
+        sender: { id: "ig_456" },
+        recipient: { id: "user_999" },
+        message: { mid: "mid_del", is_echo: true, is_deleted: true },
+      },
+    ]);
+
+    expect(parseEchoEvents(payload)).toHaveLength(0);
   });
 });

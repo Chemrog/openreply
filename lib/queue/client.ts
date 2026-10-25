@@ -75,17 +75,38 @@ export interface ProcessQuickReplyJob {
   messageId: string;
 }
 
+// An echo of a message the account sent. Enqueued with a delay so the worker
+// has recorded the ids of its own sends first; an echo whose id it never sent
+// was typed by the owner, which ends pending Quick Replies retry prompts.
+export interface ProcessEchoJob {
+  instagramAccountId: string;
+  messageId: string;
+  recipientId: string;
+}
+
 export type DmQueueJob =
   | ProcessCommentJob
   | ProcessPostbackJob
   | ProcessFollowUpJob
   | ProcessMessageJob
-  | ProcessQuickReplyJob;
+  | ProcessQuickReplyJob
+  | ProcessEchoJob;
 
 export const POSTBACK_JOB_NAME = "process-postback";
 export const FOLLOWUP_JOB_NAME = "process-followup";
 export const MESSAGE_JOB_NAME = "process-message";
 export const QUICK_REPLY_JOB_NAME = "process-quick-reply";
+export const ECHO_JOB_NAME = "process-echo";
+
+// How long the worker remembers the id of a DM it sent, and how long an echo
+// waits before being checked against those ids. The delay covers the gap
+// between Meta emitting the echo and the send call returning the id.
+export const SENT_MESSAGE_TTL_SECONDS = 24 * 60 * 60;
+export const ECHO_CHECK_DELAY_MS = 20_000;
+
+export function sentMessageKey(messageId: string): string {
+  return `openreply:sent-message:${messageId}`;
+}
 
 /**
  * Lifetime cap on DM send attempts for one comment, across every job that

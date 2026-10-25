@@ -144,6 +144,29 @@ async function handleResponse<T>(response: Response): Promise<T> {
   return data as T;
 }
 
+type SentMessageRecorder = (messageId: string) => void;
+
+let sentMessageRecorder: SentMessageRecorder | null = null;
+
+/**
+ * Register a callback that sees the id of every DM this process sends. The
+ * worker uses it to remember which outgoing messages are automated, so their
+ * echoes can be told apart from messages the account owner typed by hand.
+ */
+export function setSentMessageRecorder(recorder: SentMessageRecorder | null) {
+  sentMessageRecorder = recorder;
+}
+
+async function handleSendResponse(
+  response: Response
+): Promise<{ recipient_id: string; message_id: string }> {
+  const data = await handleResponse<{ recipient_id: string; message_id: string }>(
+    response
+  );
+  if (data.message_id) sentMessageRecorder?.(data.message_id);
+  return data;
+}
+
 export async function sendPrivateReply(
   accessToken: string,
   instagramAccountId: string,
@@ -165,7 +188,7 @@ export async function sendPrivateReply(
     }
   );
 
-  return handleResponse(response);
+  return handleSendResponse(response);
 }
 
 /**
@@ -209,7 +232,7 @@ export async function sendPrivateReplyWithButton(
     }
   );
 
-  return handleResponse(response);
+  return handleSendResponse(response);
 }
 
 /**
@@ -248,7 +271,7 @@ export async function sendPrivateReplyWithQuickReplies(
     }
   );
 
-  return handleResponse(response);
+  return handleSendResponse(response);
 }
 
 /**
@@ -290,7 +313,7 @@ export async function sendDirectMessageWithButton(
     }
   );
 
-  return handleResponse(response);
+  return handleSendResponse(response);
 }
 
 /**
@@ -429,7 +452,7 @@ export async function sendPrivateReplyWithLinkButton(
     }
   );
 
-  return handleResponse(response);
+  return handleSendResponse(response);
 }
 
 /**
@@ -457,7 +480,7 @@ export async function sendDirectMessage(
     }
   );
 
-  return handleResponse(response);
+  return handleSendResponse(response);
 }
 
 /**
@@ -495,7 +518,7 @@ export async function sendDirectMessageWithLinkButton(
     }
   );
 
-  return handleResponse(response);
+  return handleSendResponse(response);
 }
 
 /**
@@ -543,7 +566,7 @@ export async function sendDirectMessageWithQuickReplies(
     }
   );
 
-  return handleResponse(response);
+  return handleSendResponse(response);
 }
 
 export async function sendCommentReply(

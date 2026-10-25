@@ -354,7 +354,9 @@ model ContactTag {
 
 /// Tracks a contact's in-flight Quick Replies classification state for one
 /// automation: how many times we've re-prompted after a free-text (non
-/// quick-reply) reply. Deleted once the contact picks an option.
+/// quick-reply) reply. Deleted once the contact picks an option, when the
+/// owner replies by hand, or on a free-text reply more than 24h after
+/// `createdAt` (reset each time the prompt is sent).
 model ContactClassificationState {
   id           String @id @default(cuid())
   contactId    String

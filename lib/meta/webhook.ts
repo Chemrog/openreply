@@ -107,6 +107,17 @@ export interface WebhookQuickReplyEvent {
   payload: string;
 }
 
+/**
+ * A message the connected account itself sent — an automated DM or one the
+ * owner typed (in Instagram, the OpenReply inbox, or via the API). Instagram
+ * echoes both the same way; the worker tells them apart by message id.
+ */
+export interface WebhookEchoEvent {
+  instagramAccountId: string;
+  messageId: string;
+  recipientId: string;
+}
+
 export interface WebhookPostbackEvent {
   instagramAccountId: string;
   userId: string;
@@ -322,6 +333,39 @@ export function parseReadEvents(payload: WebhookPayload): WebhookReadEvent[] {
         instagramAccountId: accountId,
         userId,
         watermark: messaging.read.watermark,
+      });
+    }
+  }
+
+  return events;
+}
+
+/**
+ * Parse echoes of messages the connected account sent. These are dropped by
+ * parseMessageEvents; here they are kept so the worker can notice the owner
+ * stepping into a conversation and stop pending automated follow-ups.
+ */
+export function parseEchoEvents(payload: WebhookPayload): WebhookEchoEvent[] {
+  const events: WebhookEchoEvent[] = [];
+
+  if (payload.object !== "instagram") return events;
+
+  for (const entry of payload.entry ?? []) {
+    for (const messaging of entry.messaging ?? []) {
+      const message = messaging.message;
+      if (!message?.is_echo || message.is_deleted) continue;
+
+      const messageId = message.mid;
+      const accountId = entry.id ?? messaging.sender?.id;
+      const recipientId = messaging.recipient?.id;
+
+      if (!messageId || !accountId || !recipientId) continue;
+      if (recipientId === accountId) continue;
+
+      events.push({
+        instagramAccountId: accountId,
+        messageId,
+        recipientId,
       });
     }
   }

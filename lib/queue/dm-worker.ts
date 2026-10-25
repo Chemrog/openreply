@@ -3,12 +3,16 @@ import {
   getDMQueue,
   MAX_DM_SEND_ATTEMPTS,
   getRedisConnection,
+  ECHO_JOB_NAME,
   MESSAGE_JOB_NAME,
+  SENT_MESSAGE_TTL_SECONDS,
+  sentMessageKey,
   POSTBACK_JOB_NAME,
   FOLLOWUP_JOB_NAME,
   QUICK_REPLY_JOB_NAME,
   type DmQueueJob,
   type ProcessCommentJob,
+  type ProcessEchoJob,
   type ProcessMessageJob,
   type ProcessPostbackJob,
   type ProcessFollowUpJob,
@@ -30,6 +34,7 @@ import {
   sendPrivateReplyWithButton,
   sendPrivateReplyWithLinkButton,
   sendPrivateReplyWithQuickReplies,
+  setSentMessageRecorder,
 } from "@/lib/meta/client";
 import { decryptToken } from "@/lib/meta/oauth";
 import { matchKeywords } from "@/lib/utils/keyword-matcher";
@@ -47,6 +52,10 @@ import {
 import { triggerContactWebhooks } from "@/lib/integrations/outbound-webhooks";
 
 const BACKOFF_DELAYS = [5 * 60 * 1000, 15 * 60 * 1000, 45 * 60 * 1000];
+
+// A Quick Replies prompt stops being re-sent this long after it went out: a
+// free-text reply a day later is a new conversation, not a missed tap.
+const QUICK_REPLIES_RETRY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 function formatError(error: unknown): string {
   if (error instanceof MetaApiError) {
@@ -419,7 +428,7 @@ async function runQuickRepliesClassification(
         contactId_automationId: { contactId, automationId: automation.id },
       },
       create: { contactId, automationId: automation.id, retryCount: 0 },
-      update: { retryCount: 0 },
+      update: { retryCount: 0, createdAt: new Date() },
     });
     return { sentAt: new Date(), error: null };
   } catch (error) {
@@ -917,7 +926,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
               automationId: automation.id,
               retryCount: 0,
             },
-            update: { retryCount: 0 },
+            update: { retryCount: 0, createdAt: new Date() },
           });
           quickReplyPromptOutcome = { sentAt: new Date(), error: null };
         }
@@ -1387,6 +1396,12 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
           continue;
         }
         if (automation.instagramAccount.instagramId !== instagramAccountId) continue;
+        if (Date.now() - state.createdAt.getTime() > QUICK_REPLIES_RETRY_WINDOW_MS) {
+          await prisma.contactClassificationState
+            .delete({ where: { id: state.id } })
+            .catch(() => undefined);
+          continue;
+        }
         if (state.retryCount >= automation.quickRepliesRetryCount) continue;
         if (!automation.instagramAccount.accessToken) continue;
 
@@ -1763,6 +1778,45 @@ async function processQuickReply(job: Job<ProcessQuickReplyJob>): Promise<void> 
   }
 }
 
+/**
+ * An echo of a message the account sent. If the worker did not send it, the
+ * owner wrote it by hand: they have taken over the conversation, so pending
+ * Quick Replies retry prompts for that contact on this account are dropped.
+ */
+async function processEcho(job: Job<ProcessEchoJob>): Promise<void> {
+  const { instagramAccountId, messageId, recipientId } = job.data;
+
+  const sentByWorker = await getRedisConnection().exists(sentMessageKey(messageId));
+  if (sentByWorker) return;
+
+  const account = await prisma.instagramAccount.findUnique({
+    where: { instagramId: instagramAccountId },
+    select: { id: true, workspaceId: true },
+  });
+  if (!account) return;
+
+  const contact = await prisma.contact.findUnique({
+    where: {
+      workspaceId_igsId: { workspaceId: account.workspaceId, igsId: recipientId },
+    },
+    select: { id: true },
+  });
+  if (!contact) return;
+
+  const { count } = await prisma.contactClassificationState.deleteMany({
+    where: {
+      contactId: contact.id,
+      automation: { instagramAccountId: account.id },
+    },
+  });
+  if (count > 0) {
+    console.log(
+      "[DM Worker] Owner replied manually; stopped Quick Replies retry prompts",
+      { contactId: contact.id, cleared: count }
+    );
+  }
+}
+
 async function processJob(job: Job<DmQueueJob>): Promise<void> {
   if (job.name === POSTBACK_JOB_NAME) {
     return processPostback(job as Job<ProcessPostbackJob>);
@@ -1775,6 +1829,9 @@ async function processJob(job: Job<DmQueueJob>): Promise<void> {
   }
   if (job.name === QUICK_REPLY_JOB_NAME) {
     return processQuickReply(job as Job<ProcessQuickReplyJob>);
+  }
+  if (job.name === ECHO_JOB_NAME) {
+    return processEcho(job as Job<ProcessEchoJob>);
   }
   return processComment(job as Job<ProcessCommentJob>);
 }
@@ -1825,6 +1882,17 @@ async function recordWorkerFailure(
 }
 
 export function createDMWorker(): Worker<DmQueueJob> {
+  // Remember every DM this worker sends so processEcho can tell automated
+  // messages from ones the owner typed. Best effort: a missed write only
+  // means that echo is treated as a manual reply.
+  setSentMessageRecorder((messageId) => {
+    void getRedisConnection()
+      .set(sentMessageKey(messageId), "1", "EX", SENT_MESSAGE_TTL_SECONDS)
+      .catch((error: unknown) =>
+        console.log("[DM Worker] Failed to record sent message id:", formatError(error))
+      );
+  });
+
   const worker = new Worker<DmQueueJob>(
     "dm-processing",
     processJob,
