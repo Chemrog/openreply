@@ -296,12 +296,31 @@ export async function adMediaFor(postId: string): Promise<string[]> {
   }
 }
 
+// A broken campaign fails the same way on every sweep. Without this, a dead
+// Meta token writes an identical warning forever (tens of thousands of rows)
+// and floods the log without telling anyone anything new.
+const SWEEP_LOG_MIN_INTERVAL_MS = 60 * 60_000;
+const lastSweepLog = new Map<string, number>();
+
+function sweepLogSignature(stat: SweepStat): string {
+  // The trace id at the end of every Meta error changes per response, so key on
+  // the stable prefix instead of the whole message.
+  const errors = stat.errors.map((error) => error.slice(0, 60)).join(";");
+  return `${stat.campaign}|${errors}`;
+}
+
 async function recordSweep(
   workspaceId: string,
   stat: SweepStat
 ): Promise<void> {
   // Only log when something happened or something went wrong.
   if (stat.enqueued === 0 && stat.errors.length === 0) return;
+
+  const signature = sweepLogSignature(stat);
+  const now = Date.now();
+  const lastLoggedAt = lastSweepLog.get(signature);
+  if (lastLoggedAt && now - lastLoggedAt < SWEEP_LOG_MIN_INTERVAL_MS) return;
+  lastSweepLog.set(signature, now);
 
   await prisma.operationalEvent
     .create({
