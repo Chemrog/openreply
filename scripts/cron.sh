@@ -47,11 +47,15 @@ while true; do
   hour=${hhmm%:*}
   minute=${hhmm#*:}
 
-  # attach-next-reel every 5 minutes rather than once a day: a campaign created
+  # attach-next-reel every 30 minutes rather than once a day: a campaign created
   # before its reel is published stays inert until this binds it, and a daily
   # run would cost the whole first evening of comments.
+  #
+  # Do not go below the database's idle-suspend timeout (5 minutes on Neon
+  # Launch). Every wake costs a full 5 minutes of compute, so a 5-minute slot
+  # pins the database awake 24/7 and bills it nonstop.
   case "$minute" in
-    00|05|10|15|20|25|30|35|40|45|50|55)
+    00|30)
       if [ "$last_slot" != "$hhmm" ]; then
         last_slot="$hhmm"
         call attach-next-reel
