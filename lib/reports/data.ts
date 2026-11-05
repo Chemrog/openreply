@@ -59,7 +59,7 @@ export async function getCampaignReportBySlug(shareSlug: string) {
           destinationUrl: true,
           _count: { select: { clicks: true } },
         },
-        orderBy: { createdAt: "asc" },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       },
     },
   });

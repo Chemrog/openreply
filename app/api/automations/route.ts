@@ -194,7 +194,7 @@ export async function GET(request: NextRequest) {
           destinationUrl: true,
           _count: { select: { clicks: true } },
         },
-        orderBy: { createdAt: "asc" },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       },
       quickReplyOptions: { orderBy: { order: "asc" } },
     },
@@ -654,7 +654,7 @@ export async function PATCH(request: NextRequest) {
   if (trackedDestinationUrl !== undefined && trackedDestinationUrl !== null) {
     const primaryLink = await prisma.trackedLink.findFirst({
       where: { automationId },
-      orderBy: { createdAt: "asc" },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     });
 
     if (trackedDestinationUrl === "") {
@@ -680,12 +680,13 @@ export async function PATCH(request: NextRequest) {
   }
 
   // Update, create, or clear the campaign's second tracked link. It is always
-  // the link at index [1] (ordered by createdAt), and its `label` holds the
-  // second button's title.
+  // the link at index [1] (ordered by createdAt, then id: both links of a new
+  // campaign share one createdAt, and without the tie-break Postgres may return
+  // them in either order), and its `label` holds the second button's title.
   if (secondaryDestinationUrl !== undefined && secondaryDestinationUrl !== null) {
     const links = await prisma.trackedLink.findMany({
       where: { automationId },
-      orderBy: { createdAt: "asc" },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     });
     const secondaryLink = links[1];
     const secondaryLabel = secondaryButtonLabel?.trim() || "Open link";
