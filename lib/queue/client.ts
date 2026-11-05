@@ -108,6 +108,15 @@ export function sentMessageKey(messageId: string): string {
   return `openreply:sent-message:${messageId}`;
 }
 
+// Set when the owner writes to a contact by hand. While it lives, DM keyword
+// triggers stay quiet for that conversation so a campaign never talks over
+// the owner.
+export const OWNER_TAKEOVER_TTL_SECONDS = 24 * 60 * 60;
+
+export function ownerTakeoverKey(instagramAccountId: string, userId: string): string {
+  return `openreply:owner-takeover:${instagramAccountId}:${userId}`;
+}
+
 /**
  * Lifetime cap on DM send attempts for one comment, across every job that
  * touches it (webhook, retries, polling sweeps). Meta sometimes delivers a DM

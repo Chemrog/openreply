@@ -127,6 +127,9 @@ vi.mock("@/lib/queue/client", () => ({
   }),
   getRedisConnection: () => mockRedis,
   sentMessageKey: (messageId: string) => `sent:${messageId}`,
+  ownerTakeoverKey: (accountId: string, userId: string) =>
+    `takeover:${accountId}:${userId}`,
+  OWNER_TAKEOVER_TTL_SECONDS: 86400,
   SENT_MESSAGE_TTL_SECONDS: 86400,
   ECHO_JOB_NAME: "process-echo",
   POSTBACK_JOB_NAME: "process-postback",
@@ -246,6 +249,8 @@ beforeEach(() => {
   );
   mockPrisma.dmLog.upsert.mockResolvedValue({});
   mockPrisma.dmLog.update.mockResolvedValue({});
+  mockRedis.exists.mockResolvedValue(0);
+  mockRedis.set.mockResolvedValue("OK");
   mockPrisma.instagramAccount.findUnique.mockResolvedValue({
     workspaceId: "workspace_123",
   });
@@ -965,7 +970,7 @@ describe("DM Worker — DM keyword trigger", () => {
       data: {
         instagramAccountId: "ig_456",
         messageId: "mid_abc",
-        messageText: "can I get the LINK?",
+        messageText: "LINK please",
         senderId: "commenter_999",
         ...data,
       },
@@ -1010,6 +1015,42 @@ describe("DM Worker — DM keyword trigger", () => {
     expect(mockSendDirectMessageWithLinkButton).not.toHaveBeenCalled();
   });
 
+  it("should not reply when the keyword is buried in a longer message", async () => {
+    const processor = getProcessor();
+    await processor(
+      createMockMessageJob({
+        messageText: "me dice que no pudo instalar el LINK de ayer",
+      })
+    );
+
+    expect(mockSendDirectMessage).not.toHaveBeenCalled();
+  });
+
+  it("should not reply twice to the same person within 24h", async () => {
+    mockPrisma.dmLog.findFirst.mockImplementation(
+      async (args: { where?: { status?: string; commenterId?: string } } = {}) =>
+        args.where?.status === "SENT" && args.where?.commenterId === "commenter_999"
+          ? { id: "earlier_log" }
+          : { commenterName: "commenter_user" }
+    );
+
+    const processor = getProcessor();
+    await processor(createMockMessageJob());
+
+    expect(mockSendDirectMessage).not.toHaveBeenCalled();
+  });
+
+  it("should stay quiet while the owner is talking to the person by hand", async () => {
+    mockRedis.exists.mockImplementation(async (key: string) =>
+      key === "takeover:ig_456:commenter_999" ? 1 : 0
+    );
+
+    const processor = getProcessor();
+    await processor(createMockMessageJob());
+
+    expect(mockSendDirectMessage).not.toHaveBeenCalled();
+  });
+
   it("should log the reply against the inbound message id for dedup", async () => {
     const processor = getProcessor();
     await processor(createMockMessageJob());
@@ -1024,7 +1065,7 @@ describe("DM Worker — DM keyword trigger", () => {
         },
         create: expect.objectContaining({
           commenterId: "commenter_999",
-          commentText: "can I get the LINK?",
+          commentText: "LINK please",
           matchedKeyword: "LINK",
           status: "SENT",
         }),
@@ -1188,6 +1229,12 @@ describe("DM Worker — Quick Replies retry cutoffs", () => {
         automation: { instagramAccountId: "ig_account_row_1" },
       },
     });
+    expect(mockRedis.set).toHaveBeenCalledWith(
+      "takeover:ig_456:commenter_999",
+      "1",
+      "EX",
+      86400
+    );
   });
 
   it("ignores echoes of messages the worker sent", async () => {
@@ -1197,6 +1244,7 @@ describe("DM Worker — Quick Replies retry cutoffs", () => {
     await processor(createMockEchoJob());
 
     expect(mockPrisma.contactClassificationState.deleteMany).not.toHaveBeenCalled();
+    expect(mockRedis.set).not.toHaveBeenCalled();
   });
 
   it("does not re-send the prompt more than 24h after it went out", async () => {

@@ -5,7 +5,9 @@ import {
   getRedisConnection,
   ECHO_JOB_NAME,
   MESSAGE_JOB_NAME,
+  OWNER_TAKEOVER_TTL_SECONDS,
   SENT_MESSAGE_TTL_SECONDS,
+  ownerTakeoverKey,
   sentMessageKey,
   POSTBACK_JOB_NAME,
   FOLLOWUP_JOB_NAME,
@@ -56,6 +58,22 @@ const BACKOFF_DELAYS = [5 * 60 * 1000, 15 * 60 * 1000, 45 * 60 * 1000];
 // A Quick Replies prompt stops being re-sent this long after it went out: a
 // free-text reply a day later is a new conversation, not a missed tap.
 const QUICK_REPLIES_RETRY_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+// A DM keyword only counts when the message is about that short ("YO",
+// "quiero el link"). In a longer message the word is part of a conversation —
+// "no pude instalar Chatmu Ears" is not a request for the Chatmu campaign.
+const DM_TRIGGER_MAX_WORDS = 4;
+
+// A DM-triggered campaign answers the same person at most once per window,
+// however many of their messages contain the keyword.
+const DM_TRIGGER_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+function countWords(text: string): number {
+  return text
+    .trim()
+    .split(/\s+/)
+    .filter((word) => /[\p{L}\p{N}]/u.test(word)).length;
+}
 
 function formatError(error: unknown): string {
   if (error instanceof MetaApiError) {
@@ -1441,16 +1459,34 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
 
   const dedupeId = `dm:${messageId}`;
 
+  // The owner is talking to this person by hand: no keyword autoreplies.
+  const ownerTookOver = await getRedisConnection()
+    .exists(ownerTakeoverKey(instagramAccountId, senderId))
+    .catch(() => 0);
+  if (ownerTookOver) return;
+
+  const isShortMessage = countWords(messageText) <= DM_TRIGGER_MAX_WORDS;
+
   for (const automation of automations) {
     const matchResult = automation.matchAnyWord
       ? { matched: true, matchedKeyword: null }
-      : matchKeywords(
-          messageText,
-          automation.keywords,
-          automation.wholeWordMatch
-        );
+      : isShortMessage
+        ? matchKeywords(messageText, automation.keywords, automation.wholeWordMatch)
+        : { matched: false, matchedKeyword: null };
 
     if (!matchResult.matched) continue;
+
+    const recentReply = await prisma.dmLog.findFirst({
+      where: {
+        automationId: automation.id,
+        commenterId: senderId,
+        status: "SENT",
+        commentId: { not: dedupeId },
+        createdAt: { gte: new Date(Date.now() - DM_TRIGGER_COOLDOWN_MS) },
+      },
+      select: { id: true },
+    });
+    if (recentReply) continue;
 
     const existingLog = await prisma.dmLog.findUnique({
       where: {
@@ -1780,14 +1816,23 @@ async function processQuickReply(job: Job<ProcessQuickReplyJob>): Promise<void> 
 
 /**
  * An echo of a message the account sent. If the worker did not send it, the
- * owner wrote it by hand: they have taken over the conversation, so pending
- * Quick Replies retry prompts for that contact on this account are dropped.
+ * owner wrote it by hand: they have taken over the conversation, so DM keyword
+ * triggers pause for that contact and pending Quick Replies retry prompts on
+ * this account are dropped.
  */
 async function processEcho(job: Job<ProcessEchoJob>): Promise<void> {
   const { instagramAccountId, messageId, recipientId } = job.data;
 
-  const sentByWorker = await getRedisConnection().exists(sentMessageKey(messageId));
+  const redis = getRedisConnection();
+  const sentByWorker = await redis.exists(sentMessageKey(messageId));
   if (sentByWorker) return;
+
+  await redis.set(
+    ownerTakeoverKey(instagramAccountId, recipientId),
+    "1",
+    "EX",
+    OWNER_TAKEOVER_TTL_SECONDS
+  );
 
   const account = await prisma.instagramAccount.findUnique({
     where: { instagramId: instagramAccountId },
